@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JsBarcode from "jsbarcode";
 import { QRCodeSVG } from "qrcode.react";
+import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
 import {
   AlertCircle,
   ArrowDownToLine,
@@ -28,7 +29,32 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { request } from "./api.js";
+import { auth, googleAuthProvider } from "./firebase.js";
+import {
+  bootstrapUserSession,
+  closeShift as closeShiftInStore,
+  createBranchStore,
+  createProduct,
+  createSale,
+  createScannerSession,
+  createStockMovement,
+  exportBackupData,
+  fetchCurrentShift,
+  fetchDashboard,
+  fetchProducts,
+  fetchReport,
+  fetchSales,
+  fetchShifts,
+  fetchStockMovements,
+  fetchStores,
+  openShift as openShiftInStore,
+  setProductArchived,
+  stopScannerSession,
+  submitSaleReturn,
+  subscribeScannerScans,
+  toggleStoreActive,
+  updateProduct,
+} from "./firestoreService.js";
 import { useCameraScanner } from "./useCameraScanner.js";
 
 const rupiah = new Intl.NumberFormat("id-ID", {
@@ -41,12 +67,11 @@ function localDateString(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function dateRangeQuery(range) {
-  return new URLSearchParams({
-    from: range.from,
-    to: range.to,
-    timezoneOffset: String(new Date().getTimezoneOffset()),
-  });
+function getDateRangeBounds(range) {
+  const start = new Date(`${range.from}T00:00:00`);
+  const end = new Date(`${range.to}T00:00:00`);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
 }
 
 function formatDateTime(value) {
@@ -57,11 +82,40 @@ function formatDateTime(value) {
 }
 
 function csvValue(value) {
-  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const text = String(value ?? "");
+  const safeText = typeof value === "string" && /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replaceAll('"', '""')}"`;
 }
 
 function paymentLabel(method) {
   return ({ cash: "Tunai", qris: "QRIS", transfer: "Transfer" })[method] ?? method;
+}
+
+function criticalStockLimit(product) {
+  const min = Number(product.lowStockThreshold ?? 0);
+  return min > 0 ? Math.max(1, Math.floor(min / 2)) : 0;
+}
+
+function getCriticalThreshold(product) {
+  if (product.criticalLowStockThreshold !== undefined && product.criticalLowStockThreshold !== null && product.criticalLowStockThreshold !== "") {
+    return Number(product.criticalLowStockThreshold);
+  }
+  return criticalStockLimit(product);
+}
+
+function isCriticallyLowStock(product) {
+  if (product.isArchived) return false;
+  return product.stock === 0 || product.stock <= getCriticalThreshold(product);
+}
+
+function formatStockNames(items, max = 3) {
+  const visible = items.slice(0, max).map((item) =>
+    item.stock === 0 ? `${item.name} (habis)` : `${item.name} (${item.stock} unit)`,
+  );
+  if (items.length > max) {
+    visible.push(`+${items.length - max} lainnya`);
+  }
+  return visible.join(", ");
 }
 
 function BarcodeGraphic({ value, height = 66 }) {
@@ -92,9 +146,6 @@ function CashierApp({ user, onLogout }) {
   const [selectedStoreId, setSelectedStoreId] = useState(user.storeId);
   const [report, setReport] = useState(null);
   const [storeAccounts, setStoreAccounts] = useState([]);
-  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
-  const [resetPasswordStore, setResetPasswordStore] = useState(null);
-  const [branchPassword, setBranchPassword] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentSplits, setPaymentSplits] = useState({ cash: "", qris: "", transfer: "" });
   const [digitalConfirmed, setDigitalConfirmed] = useState(false);
@@ -136,63 +187,135 @@ function CashierApp({ user, onLogout }) {
   const [editingProduct, setEditingProduct] = useState(null);
   const [showArchivedProducts, setShowArchivedProducts] = useState(false);
   const [showStoreForm, setShowStoreForm] = useState(false);
-  const [storeForm, setStoreForm] = useState({ name: "", email: "", password: "" });
+  const [storeForm, setStoreForm] = useState({ name: "", email: "" });
   const [productForm, setProductForm] = useState({
     name: "",
     category: "",
     price: "",
     stock: "",
     lowStockThreshold: "5",
+    criticalLowStockThreshold: "2",
     barcode: "",
   });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [stockToasts, setStockToasts] = useState([]);
+  const [dismissedBannerKey, setDismissedBannerKey] = useState("");
   const [printProduct, setPrintProduct] = useState(null);
   const scanRef = useRef(null);
-  const lastScannerEventId = useRef("000000000000000000000000");
-  const apiRequest = useCallback((path, options = {}) => request(path, {
-    ...options,
-    headers: {
-      "X-Store-Id": selectedStoreId,
-      ...options.headers,
-    },
-  }).catch((requestError) => {
-    if (requestError.status === 401 && /sesi|silakan masuk/i.test(requestError.message)) {
-      onLogout();
+  const processedScanIds = useRef(new Set());
+  const prevStoreStocksRef = useRef(new Map());
+  const toastTimersRef = useRef(new Map());
+
+  const dismissStockToast = useCallback((toastId) => {
+    const timer = toastTimersRef.current.get(toastId);
+    if (timer) {
+      window.clearTimeout(timer);
+      toastTimersRef.current.delete(toastId);
     }
-    throw requestError;
-  }), [onLogout, selectedStoreId]);
+    setStockToasts((current) => current.filter((item) => item.id !== toastId));
+  }, []);
+
+  const pushStockToast = useCallback((toast) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setStockToasts((current) => [...current.slice(-2), { ...toast, id }]);
+    const timer = window.setTimeout(() => {
+      toastTimersRef.current.delete(id);
+      setStockToasts((current) => current.filter((item) => item.id !== id));
+    }, toast.severity === "critical" ? 8500 : 7000);
+    toastTimersRef.current.set(id, timer);
+  }, []);
+
+  useEffect(() => () => {
+    for (const timer of toastTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    toastTimersRef.current.clear();
+  }, []);
+
+  const evaluateStockAlerts = useCallback((storeId, productList) => {
+    const activeProducts = productList.filter((item) => !item.isArchived);
+    const nextStocks = new Map(
+      activeProducts.map((item) => [
+        item.id,
+        {
+          stock: item.stock,
+          lowStockThreshold: item.lowStockThreshold,
+          criticalLowStockThreshold: getCriticalThreshold(item),
+        },
+      ]),
+    );
+    const prevStocks = prevStoreStocksRef.current.get(storeId);
+    prevStoreStocksRef.current.set(storeId, nextStocks);
+
+    if (!prevStocks) {
+      const initialCritical = activeProducts
+        .filter(isCriticallyLowStock)
+        .sort((a, b) => a.stock - b.stock);
+      if (initialCritical.length > 0) {
+        const outCount = initialCritical.filter((item) => item.stock === 0).length;
+        pushStockToast({
+          severity: "critical",
+          title: outCount > 0 ? "Peringatan stok habis & kritis" : "Peringatan stok kritis",
+          message: `${initialCritical.length} produk perlu segera direstock: ${formatStockNames(initialCritical, 2)}.`,
+        });
+      }
+      return;
+    }
+
+    const newlyAlerted = activeProducts
+      .filter((item) => {
+        const prev = prevStocks.get(item.id);
+        if (!prev) return isCriticallyLowStock(item);
+        const wasCritical = isCriticallyLowStock({ ...prev, isArchived: false });
+        if (!wasCritical && isCriticallyLowStock(item)) return true;
+        return item.stock < prev.stock && (
+          isCriticallyLowStock(item) ||
+          (prev.stock > prev.lowStockThreshold && item.stock <= item.lowStockThreshold)
+        );
+      })
+      .sort((a, b) => a.stock - b.stock);
+
+    if (newlyAlerted.length > 0) {
+      const hasCritical = newlyAlerted.some(isCriticallyLowStock);
+      const hasOut = newlyAlerted.some((item) => item.stock === 0);
+      pushStockToast({
+        severity: hasCritical ? "critical" : "warning",
+        title: hasOut ? "Stok produk habis" : hasCritical ? "Stok mencapai level kritis" : "Stok produk menipis",
+        message: formatStockNames(newlyAlerted, 3),
+      });
+    }
+  }, [pushStockToast]);
 
   const loadData = useCallback(async () => {
     try {
       const currentDay = localDateString();
-      const dayQuery = dateRangeQuery({ from: currentDay, to: currentDay });
+      const bounds = getDateRangeBounds({ from: currentDay, to: currentDay });
       const [productData, summary, availableStores, activeShift] = await Promise.all([
-        apiRequest(`/api/products${showArchivedProducts ? "?includeArchived=true" : ""}`),
-        apiRequest(`/api/dashboard?${dayQuery}`),
-        apiRequest("/api/stores"),
-        apiRequest("/api/shifts/current"),
+        fetchProducts({ storeId: selectedStoreId, uid: user.id, includeArchived: showArchivedProducts }),
+        fetchDashboard({ storeId: selectedStoreId, uid: user.id, ...bounds }),
+        fetchStores({ uid: user.id, includeInactive: false }),
+        fetchCurrentShift({ storeId: selectedStoreId, uid: user.id }),
       ]);
       setProducts(productData);
+      evaluateStockAlerts(selectedStoreId, productData);
       setDashboard(summary);
-      setStores(availableStores);
+      if (availableStores.length) setStores(availableStores);
       setShift(activeShift);
       setConnected(true);
     } catch (loadError) {
       setConnected(false);
       throw loadError;
     }
-  }, [apiRequest, showArchivedProducts]);
+  }, [evaluateStockAlerts, selectedStoreId, showArchivedProducts, user.id]);
 
   useEffect(() => {
     loadData().catch((loadError) => setError(loadError.message));
   }, [loadData]);
 
   const loadStoreAccounts = useCallback(async () => {
-    setStoreAccounts(await apiRequest("/api/stores?includeInactive=true", {
-      headers: { "X-Store-Id": user.storeId },
-    }));
-  }, [apiRequest, user.storeId]);
+    setStoreAccounts(await fetchStores({ uid: user.id, includeInactive: true }));
+  }, [user.id]);
 
   useEffect(() => {
     if (activeTab === "Toko" && user.role === "owner") {
@@ -233,17 +356,22 @@ function CashierApp({ user, onLogout }) {
   });
 
   const loadReport = useCallback(async () => {
-    const params = dateRangeQuery(dateRange);
-    if (reportScope === "all") params.set("allStores", "true");
-    else params.set("storeId", selectedStoreId);
-    setReport(await apiRequest(`/api/reports?${params}`));
-  }, [apiRequest, dateRange, reportScope, selectedStoreId]);
+    const bounds = getDateRangeBounds(dateRange);
+    setReport(await fetchReport({
+      stores,
+      selectedStoreId,
+      reportAllStores: reportScope === "all",
+      uid: user.id,
+      ...bounds,
+      from: dateRange.from,
+      to: dateRange.to,
+    }));
+  }, [dateRange, reportScope, selectedStoreId, stores, user.id]);
 
   const loadShifts = useCallback(async () => {
-    const params = dateRangeQuery(dateRange);
-    const result = await apiRequest(`/api/shifts?${params}`);
-    setShifts(result.shifts);
-  }, [apiRequest, dateRange]);
+    const bounds = getDateRangeBounds(dateRange);
+    setShifts(await fetchShifts({ storeId: selectedStoreId, uid: user.id, ...bounds }));
+  }, [dateRange, selectedStoreId, user.id]);
 
   useEffect(() => {
     if (activeTab === "Laporan") {
@@ -252,11 +380,14 @@ function CashierApp({ user, onLogout }) {
   }, [activeTab, loadReport, loadShifts]);
 
   const loadSales = useCallback(async () => {
-    const params = dateRangeQuery(dateRange);
-    if (transactionSearch.trim()) params.set("search", transactionSearch.trim());
-    const result = await apiRequest(`/api/sales?${params}`);
-    setSales(result.sales);
-  }, [apiRequest, dateRange, transactionSearch]);
+    const bounds = getDateRangeBounds(dateRange);
+    setSales(await fetchSales({
+      storeId: selectedStoreId,
+      uid: user.id,
+      ...bounds,
+      search: transactionSearch,
+    }));
+  }, [dateRange, selectedStoreId, transactionSearch, user.id]);
 
   useEffect(() => {
     if (activeTab !== "Transaksi") return undefined;
@@ -267,45 +398,43 @@ function CashierApp({ user, onLogout }) {
   }, [activeTab, loadSales]);
 
   const loadStockMovements = useCallback(async (productId) => {
-    const params = dateRangeQuery(dateRange);
-    if (productId) params.set("productId", productId);
-    setStockMovements(await apiRequest(`/api/stock-movements?${params}`));
-  }, [apiRequest, dateRange]);
+    const bounds = getDateRangeBounds(dateRange);
+    setStockMovements(await fetchStockMovements({
+      storeId: selectedStoreId,
+      uid: user.id,
+      ...bounds,
+      productId,
+    }));
+  }, [dateRange, selectedStoreId, user.id]);
+
   const pairingUrl = remoteSession
     ? `${window.location.origin}/scanner#${new URLSearchParams({
         id: remoteSession.id,
+        storeId: remoteSession.storeId,
         token: remoteSession.token,
       }).toString()}`
     : "";
 
   useEffect(() => {
     if (!remoteSession) return undefined;
-    let active = true;
-    let timeout;
-    const pollScans = async () => {
-      try {
-        const events = await request(
-          `/api/scanner-sessions/${remoteSession.id}/scans?after=${lastScannerEventId.current}`,
-          { headers: { "X-Scanner-Token": remoteSession.token, "X-Store-Id": selectedStoreId } },
-        );
-        if (!active) return;
+    const unsubscribe = subscribeScannerScans({
+      storeId: remoteSession.storeId,
+      sessionId: remoteSession.id,
+      uid: user.id,
+      onScans: (events) => {
         for (const event of events) {
-          lastScannerEventId.current = event.id;
+          if (processedScanIds.current.has(event.id)) continue;
+          processedScanIds.current.add(event.id);
           processBarcode(event.barcode);
         }
-        timeout = window.setTimeout(pollScans, 700);
-      } catch (pollError) {
-        if (!active) return;
+      },
+      onError: (pollError) => {
         setError(pollError.message);
         setRemoteSession(null);
-      }
-    };
-    pollScans();
-    return () => {
-      active = false;
-      window.clearTimeout(timeout);
-    };
-  }, [remoteSession, processBarcode, selectedStoreId]);
+      },
+    });
+    return () => unsubscribe();
+  }, [remoteSession, processBarcode, user.id]);
 
   useEffect(() => {
     if (!printProduct) return undefined;
@@ -346,7 +475,25 @@ function CashierApp({ user, onLogout }) {
     : paymentMethod === "mixed"
       ? splitTotal === total && Number(cash) >= splitCash && (!(Number(paymentSplits.qris) || Number(paymentSplits.transfer)) || digitalConfirmed)
       : total > 0 && digitalConfirmed;
-  const lowStockProducts = products.filter((product) => !product.isArchived && product.stock <= product.lowStockThreshold);
+  const lowStockProducts = useMemo(
+    () => products
+      .filter((product) => !product.isArchived && product.stock <= product.lowStockThreshold)
+      .sort((a, b) => a.stock - b.stock),
+    [products],
+  );
+  const criticalStockProducts = useMemo(
+    () => lowStockProducts.filter(isCriticallyLowStock),
+    [lowStockProducts],
+  );
+  const outOfStockCount = useMemo(
+    () => criticalStockProducts.filter((product) => product.stock === 0).length,
+    [criticalStockProducts],
+  );
+  const lowStockSignature = useMemo(
+    () => `${selectedStoreId}:${lowStockProducts.map((p) => `${p.id}=${p.stock}`).join(",")}`,
+    [selectedStoreId, lowStockProducts],
+  );
+  const showLowStockBanner = activeTab !== "Stok menipis" && lowStockProducts.length > 0 && dismissedBannerKey !== lowStockSignature;
 
   function scanProduct(event) {
     event.preventDefault();
@@ -358,8 +505,8 @@ function CashierApp({ user, onLogout }) {
   async function connectPhoneScanner() {
     setError("");
     try {
-      const session = await apiRequest("/api/scanner-sessions", { method: "POST" });
-      lastScannerEventId.current = "000000000000000000000000";
+      const session = await createScannerSession({ storeId: selectedStoreId });
+      processedScanIds.current = new Set();
       setRemoteSession(session);
       setShowPairing(true);
     } catch (sessionError) {
@@ -373,10 +520,7 @@ function CashierApp({ user, onLogout }) {
     setRemoteSession(null);
     setShowPairing(false);
     try {
-      await apiRequest(`/api/scanner-sessions/${session.id}`, {
-        method: "DELETE",
-        headers: { "X-Scanner-Token": session.token },
-      });
+      await stopScannerSession({ storeId: session.storeId, sessionId: session.id });
       setNotice("Sesi pemindai HP sudah diakhiri.");
     } catch (sessionError) {
       setError(sessionError.message);
@@ -399,20 +543,27 @@ function CashierApp({ user, onLogout }) {
     event.preventDefault();
     setError("");
     try {
-      const saved = await apiRequest(editingProduct ? `/api/products/${editingProduct.id}` : "/api/products", {
-        method: editingProduct ? "PUT" : "POST",
-        body: JSON.stringify(editingProduct
-          ? {
+      const saved = editingProduct
+        ? await updateProduct({
+            storeId: selectedStoreId,
+            productId: editingProduct.id,
+            uid: user.id,
+            data: {
               name: productForm.name,
               category: productForm.category,
               price: productForm.price,
               lowStockThreshold: Number(productForm.lowStockThreshold),
+              criticalLowStockThreshold: Number(productForm.criticalLowStockThreshold),
               barcode: productForm.barcode,
-            }
-          : productForm),
-      });
+            },
+          })
+        : await createProduct({
+            storeId: selectedStoreId,
+            uid: user.id,
+            data: productForm,
+          });
       await loadData();
-      setProductForm({ name: "", category: "", price: "", stock: "", lowStockThreshold: "5", barcode: "" });
+      setProductForm({ name: "", category: "", price: "", stock: "", lowStockThreshold: "5", criticalLowStockThreshold: "2", barcode: "" });
       setShowProductForm(false);
       setEditingProduct(null);
       setNotice(`Produk ${saved.name} ${editingProduct ? "diperbarui" : "ditambahkan"}.`);
@@ -430,16 +581,17 @@ function CashierApp({ user, onLogout }) {
           price: String(product.price),
           stock: String(product.stock),
           lowStockThreshold: String(product.lowStockThreshold),
+          criticalLowStockThreshold: String(getCriticalThreshold(product)),
           barcode: product.barcode,
         }
-      : { name: "", category: "", price: "", stock: "", lowStockThreshold: "5", barcode: "" });
+      : { name: "", category: "", price: "", stock: "", lowStockThreshold: "5", criticalLowStockThreshold: "2", barcode: "" });
     setShowProductForm(true);
   }
 
   async function archiveProduct(product) {
     if (!window.confirm(`Arsipkan produk "${product.name}"? Riwayat penjualan tetap disimpan.`)) return;
     try {
-      await apiRequest(`/api/products/${product.id}`, { method: "DELETE" });
+      await setProductArchived({ storeId: selectedStoreId, productId: product.id, isArchived: true });
       await loadData();
       setNotice(`Produk ${product.name} diarsipkan.`);
     } catch (archiveError) {
@@ -449,7 +601,7 @@ function CashierApp({ user, onLogout }) {
 
   async function restoreProduct(product) {
     try {
-      await apiRequest(`/api/products/${product.id}/restore`, { method: "PATCH" });
+      await setProductArchived({ storeId: selectedStoreId, productId: product.id, isArchived: false });
       await loadData();
       setNotice(`Produk ${product.name} dipulihkan.`);
     } catch (restoreError) {
@@ -460,14 +612,19 @@ function CashierApp({ user, onLogout }) {
   async function createStore(event) {
     event.preventDefault();
     try {
-      const store = await apiRequest("/api/stores", {
-        method: "POST",
-        body: JSON.stringify(storeForm),
+      const store = await createBranchStore({
+        ownerUid: user.id,
+        name: storeForm.name,
+        branchEmail: storeForm.email,
       });
-      setStoreForm({ name: "", email: "", password: "" });
+      setStoreForm({ name: "", email: "" });
       setShowStoreForm(false);
       await Promise.all([loadData(), loadStoreAccounts()]);
-      setNotice(`Toko ${store.name} ditambahkan. Akun cabang: ${store.accountEmail}`);
+      setNotice(
+        store.accountEmail
+          ? `Toko ${store.name} ditambahkan. Admin cabang (${store.accountEmail}) dapat masuk dengan Google.`
+          : `Toko ${store.name} ditambahkan.`,
+      );
     } catch (storeError) {
       setError(storeError.message);
     }
@@ -475,13 +632,10 @@ function CashierApp({ user, onLogout }) {
 
   async function toggleStoreStatus(store) {
     const active = !store.active;
-    if (!active && !window.confirm(`Nonaktifkan ${store.name}? Akun admin akan dikeluarkan dan tidak dapat login.`)) return;
+    if (!active && !window.confirm(`Nonaktifkan ${store.name}? Admin cabang tidak dapat mengakses toko ini.`)) return;
     setError("");
     try {
-      await apiRequest(`/api/stores/${store.id}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ active }),
-      });
+      await toggleStoreActive({ storeId: store.id, uid: user.id, active });
       if (!active && selectedStoreId === store.id) {
         setSelectedStoreId(user.storeId);
         setCart([]);
@@ -495,58 +649,18 @@ function CashierApp({ user, onLogout }) {
     }
   }
 
-  async function resetBranchPassword(event) {
-    event.preventDefault();
-    if (!resetPasswordStore) return;
-    setError("");
-    try {
-      await apiRequest(`/api/stores/${resetPasswordStore.id}/password`, {
-        method: "POST",
-        body: JSON.stringify({ password: branchPassword }),
-      });
-      setResetPasswordStore(null);
-      setBranchPassword("");
-      setNotice(`Password akun ${resetPasswordStore.accountEmail} berhasil diatur ulang.`);
-    } catch (passwordError) {
-      setError(passwordError.message);
-    }
-  }
-
-  async function changeOwnPassword(event) {
-    event.preventDefault();
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      setError("Konfirmasi password baru tidak cocok.");
-      return;
-    }
-    setError("");
-    try {
-      await apiRequest("/api/auth/change-password", {
-        method: "POST",
-        body: JSON.stringify({
-          currentPassword: passwordForm.currentPassword,
-          newPassword: passwordForm.newPassword,
-        }),
-      });
-      setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
-      await onLogout("Password berhasil diganti. Silakan masuk kembali.");
-    } catch (passwordError) {
-      setError(passwordError.message);
-    }
-  }
-
   async function downloadBackup(allStores = false) {
     setError("");
     try {
-      const response = await fetch(`/api/backup${allStores ? "?allStores=true" : ""}`, {
-        headers: { "X-Store-Id": selectedStoreId },
+      const backup = await exportBackupData({
+        stores: storeAccounts.length ? storeAccounts : stores,
+        selectedStoreId,
+        allStores,
+        uid: user.id,
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || "Cadangan data tidak dapat diunduh.");
-      }
-      const blob = await response.blob();
-      const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1]
-        ?? "kasirku-backup.json";
+      const date = new Date().toISOString().slice(0, 10);
+      const filename = `kasirku-backup-${allStores ? "semua-toko" : "toko"}-${date}.json`;
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -564,15 +678,14 @@ function CashierApp({ user, onLogout }) {
     if (!stockProduct) return;
     setError("");
     try {
-      const movement = await apiRequest("/api/stock-movements", {
-        method: "POST",
-        body: JSON.stringify({
-          productId: stockProduct.id,
-          type: stockForm.type,
-          quantity: Number(stockForm.quantity),
-          direction: stockForm.direction,
-          reason: stockForm.reason,
-        }),
+      const movement = await createStockMovement({
+        storeId: selectedStoreId,
+        uid: user.id,
+        productId: stockProduct.id,
+        type: stockForm.type,
+        quantity: Number(stockForm.quantity),
+        direction: stockForm.direction,
+        reason: stockForm.reason,
       });
       setStockProduct((product) => ({ ...product, stock: movement.stockAfter }));
       await Promise.all([loadData(), loadStockMovements(stockProduct.id)]);
@@ -587,9 +700,10 @@ function CashierApp({ user, onLogout }) {
     event.preventDefault();
     setError("");
     try {
-      await apiRequest("/api/shifts", {
-        method: "POST",
-        body: JSON.stringify({ openingCash: Number(openingCash) }),
+      await openShiftInStore({
+        storeId: selectedStoreId,
+        uid: user.id,
+        openingCash: Number(openingCash),
       });
       setOpeningCash("");
       await loadData();
@@ -604,9 +718,11 @@ function CashierApp({ user, onLogout }) {
     if (!shift) return;
     setError("");
     try {
-      const closed = await apiRequest(`/api/shifts/${shift.id}/close`, {
-        method: "POST",
-        body: JSON.stringify({ closingCash: Number(closingCash) }),
+      const closed = await closeShiftInStore({
+        storeId: selectedStoreId,
+        uid: user.id,
+        shiftId: shift.id,
+        closingCash: Number(closingCash),
       });
       setClosingCash("");
       setShift(null);
@@ -631,9 +747,13 @@ function CashierApp({ user, onLogout }) {
     }
     setError("");
     try {
-      const returnedSale = await apiRequest(`/api/sales/${selectedSale.id}/returns`, {
-        method: "POST",
-        body: JSON.stringify({ items, reason: returnReason }),
+      const returnedSale = await submitSaleReturn({
+        storeId: selectedStoreId,
+        saleId: selectedSale.id,
+        uid: user.id,
+        shiftId: shift?.id,
+        items,
+        reason: returnReason,
       });
       setSelectedSale(returnedSale);
       setReturnQuantities(Object.fromEntries(returnedSale.items.map((item) => [item.productId, 0])));
@@ -676,6 +796,41 @@ function CashierApp({ user, onLogout }) {
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  function exportInventory() {
+    if (!filteredProducts.length) return;
+    const currentStoreName = stores.find((store) => store.id === selectedStoreId)?.name ?? user.storeName ?? "toko";
+    const storeSlug = currentStoreName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "toko";
+    const rows = [
+      ["Nama produk", "Kategori", "Barcode", "Harga (Rp)", "Stok", "Batas minimum", "Batas kritis", "Status"],
+      ...filteredProducts.map((product) => [
+        product.name,
+        product.category,
+        product.barcode,
+        Number(product.price),
+        product.stock,
+        product.lowStockThreshold,
+        getCriticalThreshold(product),
+        product.isArchived
+          ? "Diarsipkan"
+          : product.stock === 0
+            ? "Habis"
+            : isCriticallyLowStock(product)
+              ? "Stok kritis"
+              : product.stock <= product.lowStockThreshold
+                ? "Stok menipis"
+                : "Tersedia",
+      ]),
+    ];
+    const content = `\uFEFF${rows.map((row) => row.map(csvValue).join(",")).join("\r\n")}`;
+    const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `inventaris-${storeSlug}-${localDateString()}.csv`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setNotice(`Daftar inventaris (${filteredProducts.length} produk) berhasil diekspor ke CSV.`);
+  }
+
   async function checkout() {
     setError("");
     try {
@@ -686,13 +841,13 @@ function CashierApp({ user, onLogout }) {
             .map((method) => ({ method, amount: Number(paymentSplits[method] || 0) }))
             .filter((payment) => payment.amount > 0)
           : [{ method: paymentMethod, amount: total }];
-      const sale = await apiRequest("/api/sales", {
-        method: "POST",
-        body: JSON.stringify({
-          cashTendered: paymentMethod === "cash" || paymentMethod === "mixed" ? Number(cash) : 0,
-          payments,
-          items: cart.map((item) => ({ productId: item.id, quantity: item.quantity })),
-        }),
+      const sale = await createSale({
+        storeId: selectedStoreId,
+        uid: user.id,
+        shiftId: shift?.id,
+        cashTendered: paymentMethod === "cash" || paymentMethod === "mixed" ? Number(cash) : 0,
+        payments,
+        items: cart.map((item) => ({ productId: item.id, quantity: item.quantity })),
       });
       setNotice(`Transaksi berhasil. Kembalian ${rupiah.format(Number(sale.change))}.`);
       setCart([]);
@@ -808,6 +963,9 @@ function CashierApp({ user, onLogout }) {
                   {showArchivedProducts ? "Produk aktif" : "Produk arsip"}
                 </button>
               )}
+              <button className="secondary-button" onClick={exportInventory} disabled={!filteredProducts.length}>
+                <ArrowDownToLine size={16} /> Ekspor CSV
+              </button>
               <button className="primary-button" onClick={() => openProductForm()}>
                 <Plus size={17} /> Tambah produk
               </button>
@@ -852,15 +1010,41 @@ function CashierApp({ user, onLogout }) {
           </div>
         )}
 
+        {showLowStockBanner && (
+          <div className={`low-stock-alert ${criticalStockProducts.length > 0 ? "critical" : ""}`} role="status">
+            <AlertCircle size={17} />
+            <span>
+              {criticalStockProducts.length > 0 ? (
+                <>
+                  <strong>Peringatan stok kritis: {criticalStockProducts.length} produk{outOfStockCount > 0 ? ` (${outOfStockCount} habis)` : ""}</strong>
+                  {" — "}
+                  {formatStockNames(criticalStockProducts)}
+                  {lowStockProducts.length > criticalStockProducts.length
+                    ? `, dan ${lowStockProducts.length - criticalStockProducts.length} stok menipis lainnya.`
+                    : "."}
+                </>
+              ) : (
+                <>
+                  <strong>{lowStockProducts.length} produk perlu restock</strong>
+                  {" — "}
+                  {formatStockNames(lowStockProducts)} menyentuh batas minimum.
+                </>
+              )}
+            </span>
+            <button className="text-button" onClick={() => setActiveTab("Stok menipis")}>Lihat daftar</button>
+            <button
+              className="low-stock-dismiss"
+              onClick={() => setDismissedBannerKey(lowStockSignature)}
+              aria-label="Tutup peringatan stok"
+              title="Tutup sementara"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
+
         {activeTab === "Kasir" && (
           <>
-          {lowStockProducts.length > 0 && (
-            <div className="low-stock-alert">
-              <AlertCircle size={17} />
-              <span><strong>{lowStockProducts.length} produk perlu restock</strong> — beberapa stok sudah menyentuh batas minimum.</span>
-              <button className="text-button" onClick={() => setActiveTab("Stok menipis")}>Lihat daftar</button>
-            </div>
-          )}
           <section className="shift-card">
             <div className="shift-summary">
               <span className={`shift-indicator ${shift ? "shift-open" : ""}`} />
@@ -1060,7 +1244,7 @@ function CashierApp({ user, onLogout }) {
               </div>
               <div className="table-scroll">
                 <table>
-                  <thead><tr><th>PRODUK</th><th>KATEGORI</th><th>BARCODE</th><th>HARGA</th><th>STOK</th><th>BATAS MIN.</th><th>AKSI</th></tr></thead>
+                  <thead><tr><th>PRODUK</th><th>KATEGORI</th><th>BARCODE</th><th>HARGA</th><th>STOK</th><th>BATAS MIN. / KRITIS</th><th>AKSI</th></tr></thead>
                   <tbody>
                     {filteredProducts.map((product) => (
                       <tr key={product.id}>
@@ -1068,8 +1252,17 @@ function CashierApp({ user, onLogout }) {
                         <td><span className="table-category">{product.category}</span></td>
                         <td><span className="barcode-text">{product.barcode}</span></td>
                         <td>{rupiah.format(Number(product.price))}</td>
-                        <td><span className={`stock-value ${product.stock <= product.lowStockThreshold ? "low" : ""}`}>{product.stock} unit</span></td>
-                        <td>{product.lowStockThreshold} unit</td>
+                        <td>
+                          <span className={`stock-value ${isCriticallyLowStock(product) ? "critical" : product.stock <= product.lowStockThreshold ? "low" : ""}`}>
+                            {product.stock} unit
+                          </span>
+                        </td>
+                        <td>
+                          <span className="table-sale-cell">
+                            <span>{product.lowStockThreshold} unit</span>
+                            <small className="table-subtext">Kritis ≤ {getCriticalThreshold(product)}</small>
+                          </span>
+                        </td>
                         <td>
                           <div className="table-actions">
                             {!product.isArchived && (
@@ -1103,13 +1296,14 @@ function CashierApp({ user, onLogout }) {
             <div className="inventory-toolbar"><div><h2>Produk perlu restock</h2><p>{lowStockProducts.length} produk berada di atau di bawah batas minimum.</p></div></div>
             <div className="table-scroll">
               <table>
-                <thead><tr><th>PRODUK</th><th>STOK SAAT INI</th><th>BATAS MINIMUM</th><th>AKSI</th></tr></thead>
+                <thead><tr><th>PRODUK</th><th>STOK SAAT INI</th><th>BATAS MINIMUM</th><th>BATAS KRITIS</th><th>AKSI</th></tr></thead>
                 <tbody>
                   {lowStockProducts.map((product) => (
                     <tr key={product.id}>
                       <td><span className="table-sale-cell"><strong>{product.name}</strong><small className="table-subtext">{product.category}</small></span></td>
-                      <td><span className="stock-value low">{product.stock} unit</span></td>
+                      <td><span className={`stock-value ${isCriticallyLowStock(product) ? "critical" : "low"}`}>{product.stock} unit</span></td>
                       <td>{product.lowStockThreshold} unit</td>
+                      <td>{getCriticalThreshold(product)} unit</td>
                       <td><button className="print-button" onClick={() => {
                         setStockProduct(product);
                         setStockForm({ type: "in", quantity: "", direction: "increase", reason: "" });
@@ -1117,7 +1311,7 @@ function CashierApp({ user, onLogout }) {
                       }}><Boxes size={14} /> Tambah stok</button></td>
                     </tr>
                   ))}
-                  {!lowStockProducts.length && <tr><td className="table-empty" colSpan="4">Tidak ada produk yang perlu direstock.</td></tr>}
+                  {!lowStockProducts.length && <tr><td className="table-empty" colSpan="5">Tidak ada produk yang perlu direstock.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1208,17 +1402,16 @@ function CashierApp({ user, onLogout }) {
 
         {activeTab === "Toko" && user.role === "owner" && (
           <section className="inventory-card">
-            <div className="inventory-toolbar"><div><h2>Daftar toko dan akun</h2><p>Nonaktifkan akses tanpa menghapus toko atau riwayat transaksinya.</p></div></div>
+            <div className="inventory-toolbar"><div><h2>Daftar toko dan akses cabang</h2><p>Nonaktifkan akses cabang tanpa menghapus toko atau riwayat transaksinya.</p></div></div>
             <div className="store-management-list">
               {storeAccounts.map((store) => (
                 <div className="store-management-row" key={store.id}>
                   <span className="store-avatar"><ShoppingBag size={16} /></span>
-                  <span><strong>{store.name}</strong><small>{store.isPrimary ? `Toko utama · ${user.email}` : `${store.accountEmail} · ${store.active ? "Aktif" : "Nonaktif"}`}</small></span>
+                  <span><strong>{store.name}</strong><small>{store.isPrimary ? `Toko utama · ${user.email}` : `${store.accountEmail || "Tanpa admin cabang"} · ${store.active ? "Aktif" : "Nonaktif"}`}</small></span>
                   {store.isPrimary
                     ? <span className="table-category">UTAMA</span>
                     : (
                       <div className="store-account-actions">
-                        <button className="secondary-button" onClick={() => { setResetPasswordStore(store); setBranchPassword(""); }}>Atur ulang password</button>
                         <button className="secondary-button" onClick={() => toggleStoreStatus(store)}>{store.active ? "Nonaktifkan" : "Aktifkan"}</button>
                       </div>
                     )}
@@ -1232,16 +1425,16 @@ function CashierApp({ user, onLogout }) {
         {activeTab === "Akun" && (
           <div className="account-settings">
             <section className="inventory-card">
-              <div className="inventory-toolbar"><div><h2>Ganti password</h2><p>Perubahan password akan mengeluarkan sesi akun lain.</p></div></div>
-              <form className="account-form" onSubmit={changeOwnPassword}>
-                <label>Password saat ini<input required type="password" autoComplete="current-password" value={passwordForm.currentPassword} onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })} /></label>
-                <label>Password baru<input required type="password" autoComplete="new-password" minLength="12" value={passwordForm.newPassword} onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })} /></label>
-                <label>Ulangi password baru<input required type="password" autoComplete="new-password" minLength="12" value={passwordForm.confirmPassword} onChange={(event) => setPasswordForm({ ...passwordForm, confirmPassword: event.target.value })} /></label>
-                <button className="primary-button" type="submit">Ganti password</button>
-              </form>
+              <div className="inventory-toolbar"><div><h2>Akun Google terhubung</h2><p>Autentikasi dikelola dengan aman menggunakan Google Sign-In.</p></div></div>
+              <div className="account-form">
+                <label>Email Google<input readOnly value={user.email} /></label>
+                {user.displayName && <label>Nama<input readOnly value={user.displayName} /></label>}
+                <label>Peran<input readOnly value={user.role === "owner" ? "Pemilik utama" : "Admin cabang"} /></label>
+                <button className="secondary-button" type="button" onClick={() => onLogout("")}><LogOut size={16} /> Keluar dari akun</button>
+              </div>
             </section>
             <section className="inventory-card backup-card">
-              <div className="inventory-toolbar"><div><h2>Ekspor cadangan data</h2><p>File JSON berisi produk, transaksi, retur, pergerakan stok, dan shift; tanpa hash password atau token sesi.</p></div></div>
+              <div className="inventory-toolbar"><div><h2>Ekspor cadangan data</h2><p>File JSON berisi produk, transaksi, retur, pergerakan stok, dan shift; tersimpan di Cloud Firestore.</p></div></div>
               <div className="backup-actions">
                 <button className="secondary-button" onClick={() => downloadBackup(false)}><ArrowDownToLine size={16} /> Unduh cadangan toko ini</button>
                 {user.role === "owner" && <button className="primary-button" onClick={() => downloadBackup(true)}><ArrowDownToLine size={16} /> Unduh semua toko</button>}
@@ -1264,9 +1457,44 @@ function CashierApp({ user, onLogout }) {
             </div>
             <div className="form-row">
               <label>{editingProduct ? "Stok saat ini" : "Stok awal"}<input required type="number" min="0" step="1" placeholder="24" value={productForm.stock} disabled={Boolean(editingProduct)} onChange={(event) => setProductForm({ ...productForm, stock: event.target.value })} /></label>
-              <label>Batas stok minimum<input required type="number" min="0" step="1" value={productForm.lowStockThreshold} onChange={(event) => setProductForm({ ...productForm, lowStockThreshold: event.target.value })} /></label>
+              <label>
+                Batas stok minimum
+                <input
+                  required
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={productForm.lowStockThreshold}
+                  onChange={(event) => {
+                    const nextMin = event.target.value;
+                    setProductForm((prev) => {
+                      const nextMinNum = Number(nextMin);
+                      const prevCritNum = Number(prev.criticalLowStockThreshold);
+                      const clampedCrit = nextMin !== "" && Number.isFinite(nextMinNum) && prev.criticalLowStockThreshold !== "" && prevCritNum > nextMinNum
+                        ? String(Math.max(0, nextMinNum))
+                        : prev.criticalLowStockThreshold;
+                      return { ...prev, lowStockThreshold: nextMin, criticalLowStockThreshold: clampedCrit };
+                    });
+                  }}
+                />
+              </label>
             </div>
-            <label>Barcode <span className="optional">(opsional)</span><input inputMode="numeric" placeholder="Kosongkan untuk dibuat otomatis" value={productForm.barcode} onChange={(event) => setProductForm({ ...productForm, barcode: event.target.value })} /></label>
+            <div className="form-row">
+              <label>
+                Batas stok kritis
+                <input
+                  required
+                  type="number"
+                  min="0"
+                  max={productForm.lowStockThreshold !== "" ? productForm.lowStockThreshold : undefined}
+                  step="1"
+                  placeholder="2"
+                  value={productForm.criticalLowStockThreshold}
+                  onChange={(event) => setProductForm({ ...productForm, criticalLowStockThreshold: event.target.value })}
+                />
+              </label>
+              <label>Barcode <span className="optional">(opsional)</span><input inputMode="numeric" placeholder="Kosongkan untuk dibuat otomatis" value={productForm.barcode} onChange={(event) => setProductForm({ ...productForm, barcode: event.target.value })} /></label>
+            </div>
             {editingProduct && <div className="barcode-hint"><Boxes size={16} /><span>Gunakan menu Stok untuk mencatat stok masuk atau penyesuaian beserta alasannya.</span></div>}
             <div className="barcode-hint"><Sparkles size={16} /><span>Barcode kosong? Kami buatkan barcode unik yang siap dipindai dan dicetak.</span></div>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setShowProductForm(false); setEditingProduct(null); }}>Batal</button><button type="submit" className="primary-button"><Plus size={16} /> {editingProduct ? "Simpan perubahan" : "Simpan produk"}</button></div>
@@ -1366,23 +1594,11 @@ function CashierApp({ user, onLogout }) {
       {showStoreForm && (
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowStoreForm(false); }}>
           <form className="product-modal" onSubmit={createStore}>
-            <div className="modal-heading"><div><span className="modal-icon"><Smartphone size={19} /></span><div><h2>Tambah toko</h2><p>Buat cabang dengan akun admin terpisah.</p></div></div><button type="button" className="icon-button" onClick={() => setShowStoreForm(false)} aria-label="Tutup"><X size={19} /></button></div>
+            <div className="modal-heading"><div><span className="modal-icon"><Smartphone size={19} /></span><div><h2>Tambah toko</h2><p>Buat cabang dan opsional izinkan admin cabang masuk dengan Google.</p></div></div><button type="button" className="icon-button" onClick={() => setShowStoreForm(false)} aria-label="Tutup"><X size={19} /></button></div>
             <label>Nama toko<input required autoFocus placeholder="Contoh: Toko Berkah 2" value={storeForm.name} onChange={(event) => setStoreForm({ ...storeForm, name: event.target.value })} /></label>
-            <label>Email admin cabang<input required type="email" autoComplete="email" placeholder="admin@toko.com" value={storeForm.email} onChange={(event) => setStoreForm({ ...storeForm, email: event.target.value })} /></label>
-            <label>Password awal admin<input required type="password" autoComplete="new-password" minLength="12" placeholder="Minimal 12 karakter" value={storeForm.password} onChange={(event) => setStoreForm({ ...storeForm, password: event.target.value })} /></label>
-            <div className="barcode-hint"><AlertCircle size={16} /><span>Simpan password awal dengan aman dan berikan langsung kepada admin cabang.</span></div>
+            <label>Email Google admin cabang <span className="optional">(opsional)</span><input type="email" autoComplete="email" placeholder="admin@gmail.com" value={storeForm.email} onChange={(event) => setStoreForm({ ...storeForm, email: event.target.value })} /></label>
+            <div className="barcode-hint"><AlertCircle size={16} /><span>Admin cabang cukup masuk menggunakan akun Google dengan email tersebut.</span></div>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowStoreForm(false)}>Batal</button><button type="submit" className="primary-button"><Plus size={16} /> Buat toko</button></div>
-          </form>
-        </div>
-      )}
-
-      {resetPasswordStore && (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setResetPasswordStore(null); }}>
-          <form className="product-modal" onSubmit={resetBranchPassword}>
-            <div className="modal-heading"><div><span className="modal-icon"><Wallet size={19} /></span><div><h2>Atur ulang password</h2><p>{resetPasswordStore.accountEmail} · sesi lama akan berakhir.</p></div></div><button type="button" className="icon-button" onClick={() => setResetPasswordStore(null)} aria-label="Tutup atur ulang password"><X size={19} /></button></div>
-            <label>Password sementara<input required autoFocus type="password" autoComplete="new-password" minLength="12" value={branchPassword} onChange={(event) => setBranchPassword(event.target.value)} placeholder="Minimal 12 karakter" /></label>
-            <div className="barcode-hint"><AlertCircle size={16} /><span>Berikan password baru secara langsung dan aman kepada admin toko.</span></div>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setResetPasswordStore(null)}>Batal</button><button type="submit" className="primary-button">Atur ulang</button></div>
           </form>
         </div>
       )}
@@ -1444,6 +1660,40 @@ function CashierApp({ user, onLogout }) {
         </div>
       )}
 
+      {stockToasts.length > 0 && (
+        <div className="toast-stack" aria-live="polite" aria-label="Notifikasi stok">
+          {stockToasts.map((toast) => (
+            <div className={`stock-toast ${toast.severity === "critical" ? "critical" : ""}`} role="status" key={toast.id}>
+              <span className="stock-toast-icon"><AlertCircle size={17} /></span>
+              <div className="stock-toast-copy">
+                <strong>{toast.title}</strong>
+                <p>{toast.message}</p>
+                <div className="stock-toast-actions">
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      setActiveTab("Stok menipis");
+                      dismissStockToast(toast.id);
+                    }}
+                  >
+                    Lihat stok menipis <span>→</span>
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="stock-toast-close"
+                onClick={() => dismissStockToast(toast.id)}
+                aria-label="Tutup notifikasi stok"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {printProduct && (
         <div className="print-area">
           <strong>{printProduct.name}</strong>
@@ -1455,35 +1705,77 @@ function CashierApp({ user, onLogout }) {
   );
 }
 
-function LoginScreen({ onLogin, error, notice, loading }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  function submit(event) {
-    event.preventDefault();
-    onLogin(email, password);
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
   }
 
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("KasirKu ErrorBoundary:", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="login-page">
+          <div className="login-card">
+            <div className="login-heading">
+              <h1>Terjadi kesalahan</h1>
+              <p>Aplikasi mengalami kendala saat memuat data. Muat ulang halaman untuk mencoba lagi.</p>
+            </div>
+            <div className="alert alert-error">
+              <AlertCircle size={17} />
+              <span>{this.state.error.message}</span>
+            </div>
+            <button
+              className="primary-button login-submit"
+              type="button"
+              onClick={() => window.location.reload()}
+            >
+              Muat ulang halaman
+            </button>
+          </div>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function LoginScreen({ onGoogleLogin, error, notice, loading }) {
   return (
     <main className="login-page">
-      <form className="login-card" onSubmit={submit}>
+      <div className="login-card">
         <a className="brand login-brand" href="#" onClick={(event) => event.preventDefault()}>
           <span className="brand-mark"><ShoppingBag size={21} strokeWidth={2.5} /></span>
           <span>kasir<span className="brand-green">ku</span><small>POINT OF SALE</small></span>
         </a>
-        <div className="login-heading"><h1>Selamat datang</h1><p>Masuk dengan akun toko untuk melanjutkan.</p></div>
+        <div className="login-heading">
+          <h1>Selamat datang</h1>
+          <p>Masuk menggunakan akun Google untuk mengelola kasir dan inventaris toko.</p>
+        </div>
         {notice && <div className="alert alert-success"><Check size={17} /><span>{notice}</span></div>}
         {error && <div className="alert alert-error"><AlertCircle size={17} /><span>{error}</span></div>}
-        <label>Email<input type="email" autoComplete="username" required autoFocus placeholder="nama@toko.com" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-        <label>Password<input type="password" autoComplete="current-password" required placeholder="Masukkan password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <button className="primary-button login-submit" disabled={loading}>{loading ? "Memeriksa..." : "Masuk"}</button>
-        <p className="login-help">Akun cabang dibuat oleh pemilik toko utama.</p>
-      </form>
+        <button
+          type="button"
+          className="primary-button login-submit"
+          disabled={loading}
+          onClick={onGoogleLogin}
+        >
+          {loading ? "Menghubungkan..." : "Masuk dengan Google"}
+        </button>
+        <p className="login-help">Data toko tersimpan aman dan tersinkronisasi di Cloud Firestore.</p>
+      </div>
     </main>
   );
 }
 
-function App() {
+function AppContent() {
   const [user, setUser] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -1492,31 +1784,41 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    request("/api/auth/me")
-      .then(({ user: currentUser }) => {
-        if (active) setUser(currentUser);
-      })
-      .catch((error) => {
-        if (active && error.status !== 401) setLoginError(error.message);
-      })
-      .finally(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!active) return;
+      if (!firebaseUser) {
+        setUser(null);
+        setCheckingSession(false);
+        return;
+      }
+      setCheckingSession(true);
+      setLoginError("");
+      try {
+        const profile = await bootstrapUserSession(firebaseUser);
+        if (active) setUser(profile);
+      } catch (sessionError) {
+        if (active) {
+          setLoginError(sessionError.message);
+          setUser(null);
+        }
+      } finally {
         if (active) setCheckingSession(false);
-      });
-    return () => { active = false; };
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
-  async function login(email, password) {
+  async function loginWithGoogle() {
     setLoginLoading(true);
     setLoginError("");
     setLoginNotice("");
     try {
-      const { user: authenticatedUser } = await request("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
-      setUser(authenticatedUser);
+      await signInWithPopup(auth, googleAuthProvider);
     } catch (error) {
-      setLoginError(error.message);
+      setLoginError(error.message || "Gagal masuk dengan Google.");
     } finally {
       setLoginLoading(false);
     }
@@ -1524,10 +1826,10 @@ function App() {
 
   const logout = useCallback(async (notice = "") => {
     try {
-      await request("/api/auth/logout", { method: "POST" });
+      await signOut(auth);
       setUser(null);
       setLoginError("");
-      setLoginNotice(notice);
+      setLoginNotice(typeof notice === "string" ? notice : "");
     } catch (error) {
       setLoginError(error.message);
     }
@@ -1536,8 +1838,16 @@ function App() {
   if (checkingSession) {
     return <main className="login-page"><p className="login-loading">Memeriksa sesi akun...</p></main>;
   }
-  if (!user) return <LoginScreen onLogin={login} error={loginError} notice={loginNotice} loading={loginLoading} />;
+  if (!user) return <LoginScreen onGoogleLogin={loginWithGoogle} error={loginError} notice={loginNotice} loading={loginLoading} />;
   return <CashierApp key={user.id} user={user} onLogout={logout} />;
+}
+
+function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
 }
 
 export default App;

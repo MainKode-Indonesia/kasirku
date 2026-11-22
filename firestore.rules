@@ -1,0 +1,449 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'mainkode4@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isMemberList(listVal) {
+      return listVal is list && listVal.size() >= 1 && listVal.size() <= 10 && listVal[0] is string && isValidId(listVal[0]);
+    }
+
+    function storeDoc(storeId) {
+      return get(/databases/$(database)/documents/stores/$(storeId));
+    }
+
+    function storeExists(storeId) {
+      return exists(/databases/$(database)/documents/stores/$(storeId));
+    }
+
+    function storeDocAfter(storeId) {
+      return getAfter(/databases/$(database)/documents/stores/$(storeId));
+    }
+
+    function storeExistsAfter(storeId) {
+      return existsAfter(/databases/$(database)/documents/stores/$(storeId));
+    }
+
+    function isStoreOwner(storeId) {
+      return isVerified() && storeExists(storeId) && storeDoc(storeId).data.ownerUid == request.auth.uid;
+    }
+
+    function isStoreMember(storeId) {
+      return isVerified() && storeExists(storeId) && (
+        storeDoc(storeId).data.ownerUid == request.auth.uid ||
+        request.auth.uid in storeDoc(storeId).data.memberUids
+      );
+    }
+
+    function isStoreMemberAfterForCreate(storeId, ownerUid) {
+      return isVerified() && storeExistsAfter(storeId)
+        && storeDocAfter(storeId).data.ownerUid == ownerUid
+        && (
+          storeDocAfter(storeId).data.ownerUid == request.auth.uid ||
+          request.auth.uid in storeDocAfter(storeId).data.memberUids
+        );
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'primaryStoreId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'primaryStoreId', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+        && data.displayName is string && data.displayName.size() <= 120
+        && data.role in ['owner', 'store']
+        && isValidId(data.primaryStoreId)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStore(data) {
+      return data.keys().hasAll(['ownerUid', 'memberUids', 'name', 'isPrimary', 'active', 'branchEmail', 'barcodeSeq', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'memberUids', 'name', 'isPrimary', 'active', 'branchEmail', 'barcodeSeq', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && data.ownerUid in data.memberUids
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.isPrimary is bool
+        && data.active is bool
+        && data.branchEmail is string && data.branchEmail.size() <= 120
+        && data.barcodeSeq is int && data.barcodeSeq >= 0 && data.barcodeSeq <= 999999999
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProduct(data, storeId) {
+      return data.keys().hasAll(['storeId', 'ownerUid', 'memberUids', 'name', 'category', 'price', 'stock', 'lowStockThreshold', 'barcode', 'isArchived', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['storeId', 'ownerUid', 'memberUids', 'name', 'category', 'price', 'stock', 'lowStockThreshold', 'criticalLowStockThreshold', 'barcode', 'isArchived', 'createdAt', 'updatedAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 60
+        && (data.price is int || data.price is float) && data.price >= 0
+        && data.stock is int && data.stock >= 0
+        && data.lowStockThreshold is int && data.lowStockThreshold >= 0
+        && (!('criticalLowStockThreshold' in data) || (data.criticalLowStockThreshold is int && data.criticalLowStockThreshold >= 0 && data.criticalLowStockThreshold <= data.lowStockThreshold))
+        && data.barcode is string && data.barcode.size() >= 8 && data.barcode.size() <= 13 && data.barcode.matches('^[0-9]{8,13}$')
+        && data.isArchived is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidShift(data, storeId) {
+      return data.keys().hasAll(['storeId', 'ownerUid', 'memberUids', 'status', 'openingCash', 'openedByUid', 'openedAt', 'updatedAt'])
+        && data.keys().hasOnly(['storeId', 'ownerUid', 'memberUids', 'status', 'openingCash', 'closingCash', 'expectedCash', 'difference', 'openedByUid', 'openedAt', 'closedAt', 'updatedAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && data.status in ['open', 'closed']
+        && data.openingCash is int && data.openingCash >= 0
+        && (!('closingCash' in data) || (data.closingCash is int && data.closingCash >= 0))
+        && (!('expectedCash' in data) || (data.expectedCash is int || data.expectedCash is float))
+        && (!('difference' in data) || (data.difference is int || data.difference is float))
+        && (!('closedAt' in data) || data.closedAt is timestamp)
+        && isValidId(data.openedByUid)
+        && data.openedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSale(data, storeId) {
+      return data.keys().hasAll(['storeId', 'ownerUid', 'memberUids', 'shiftId', 'cashierUid', 'total', 'paid', 'cashTendered', 'cashAmount', 'change', 'payments', 'items', 'returnedTotal', 'netTotal', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['storeId', 'ownerUid', 'memberUids', 'shiftId', 'cashierUid', 'total', 'paid', 'cashTendered', 'cashAmount', 'change', 'payments', 'items', 'returnedTotal', 'netTotal', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && isValidId(data.shiftId)
+        && isValidId(data.cashierUid)
+        && (data.total is int || data.total is float) && data.total > 0
+        && (data.paid is int || data.paid is float) && data.paid >= 0
+        && (data.cashTendered is int || data.cashTendered is float) && data.cashTendered >= 0
+        && (data.cashAmount is int || data.cashAmount is float) && data.cashAmount >= 0
+        && (data.change is int || data.change is float) && data.change >= 0
+        && data.payments is list && data.payments.size() >= 1 && data.payments.size() <= 3 && data.payments[0] is map
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 100 && data.items[0] is map
+        && (data.returnedTotal is int || data.returnedTotal is float) && data.returnedTotal >= 0 && data.returnedTotal <= data.total
+        && (data.netTotal is int || data.netTotal is float) && data.netTotal >= 0
+        && data.status in ['completed', 'partially_returned', 'returned']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSaleReturn(data, storeId, saleId) {
+      return data.keys().hasAll(['storeId', 'saleId', 'ownerUid', 'memberUids', 'shiftId', 'cashierUid', 'amount', 'cashAmount', 'payments', 'items', 'reason', 'createdAt'])
+        && data.keys().hasOnly(['storeId', 'saleId', 'ownerUid', 'memberUids', 'shiftId', 'cashierUid', 'amount', 'cashAmount', 'payments', 'items', 'reason', 'createdAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.saleId) && data.saleId == saleId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && isValidId(data.shiftId)
+        && isValidId(data.cashierUid)
+        && (data.amount is int || data.amount is float) && data.amount > 0
+        && (data.cashAmount is int || data.cashAmount is float) && data.cashAmount >= 0
+        && data.payments is list && data.payments.size() >= 1 && data.payments.size() <= 3 && data.payments[0] is map
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 100 && data.items[0] is map
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 200
+        && data.createdAt is timestamp;
+    }
+
+    function isValidStockMovement(data, storeId) {
+      return data.keys().hasAll(['storeId', 'ownerUid', 'memberUids', 'productId', 'productName', 'type', 'quantity', 'stockBefore', 'stockAfter', 'reason', 'createdByUid', 'createdAt'])
+        && data.keys().hasOnly(['storeId', 'ownerUid', 'memberUids', 'productId', 'productName', 'type', 'quantity', 'stockBefore', 'stockAfter', 'reason', 'saleId', 'returnId', 'createdByUid', 'createdAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && isValidId(data.productId)
+        && data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 120
+        && data.type in ['initial', 'in', 'adjustment', 'sale', 'return']
+        && data.quantity is int
+        && data.stockBefore is int && data.stockBefore >= 0
+        && data.stockAfter is int && data.stockAfter >= 0
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 200
+        && (!('saleId' in data) || isValidId(data.saleId))
+        && (!('returnId' in data) || isValidId(data.returnId))
+        && isValidId(data.createdByUid)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidScannerSession(data, storeId) {
+      return data.keys().hasAll(['storeId', 'ownerUid', 'memberUids', 'tokenHash', 'active', 'createdAt', 'expiresAt'])
+        && data.keys().hasOnly(['storeId', 'ownerUid', 'memberUids', 'tokenHash', 'active', 'createdAt', 'expiresAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && data.tokenHash is string && data.tokenHash.size() == 64 && data.tokenHash.matches('^[a-f0-9]{64}$')
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.expiresAt is timestamp;
+    }
+
+    function isValidScannerScan(data, storeId, sessionId) {
+      return data.keys().hasAll(['storeId', 'sessionId', 'ownerUid', 'memberUids', 'barcode', 'createdAt'])
+        && data.keys().hasOnly(['storeId', 'sessionId', 'ownerUid', 'memberUids', 'barcode', 'createdAt'])
+        && isValidId(data.storeId) && data.storeId == storeId
+        && isValidId(data.sessionId) && data.sessionId == sessionId
+        && isValidId(data.ownerUid)
+        && isMemberList(data.memberUids)
+        && data.barcode is string && data.barcode.size() >= 8 && data.barcode.size() <= 13 && data.barcode.matches('^[0-9]{8,13}$')
+        && data.createdAt is timestamp;
+    }
+
+    match /admins/{adminId} {
+      allow get: if isVerified() && isValidId(adminId) && request.auth.uid == adminId;
+      allow list, create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && (request.auth.uid == userId || isAdmin())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'primaryStoreId', 'updatedAt'])
+            && incoming().role == existing().role)
+        );
+      allow delete: if false;
+    }
+
+    match /stores/{storeId} {
+      allow get: if isVerified() && isValidId(storeId) && (
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().memberUids ||
+        (existing().branchEmail != '' && existing().branchEmail == request.auth.token.email) ||
+        isAdmin()
+      );
+      allow list: if isVerified() && (
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.uid in resource.data.memberUids ||
+        (resource.data.branchEmail != '' && resource.data.branchEmail == request.auth.token.email) ||
+        isAdmin()
+      );
+      allow create: if isVerified() && isValidId(storeId)
+        && isValidStore(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(storeId)
+        && isValidStore(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().isPrimary == existing().isPrimary
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'active', 'branchEmail', 'memberUids', 'barcodeSeq', 'updatedAt'])) ||
+          (request.auth.uid in existing().memberUids && incoming().diff(existing()).affectedKeys().hasOnly(['barcodeSeq', 'updatedAt']) && incoming().barcodeSeq >= existing().barcodeSeq) ||
+          (existing().branchEmail != '' && existing().branchEmail == request.auth.token.email && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']) && incoming().memberUids.hasAll(existing().memberUids) && incoming().memberUids.size() == existing().memberUids.size() + 1 && request.auth.uid in incoming().memberUids)
+        );
+      allow delete: if false;
+
+      match /products/{productId} {
+        allow get: if isVerified() && isValidId(storeId) && isValidId(productId) && (isStoreMember(storeId) || isAdmin());
+        allow list: if isVerified() && (
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.memberUids ||
+          isAdmin()
+        );
+        allow create: if isVerified() && isValidId(storeId) && isValidId(productId)
+          && isValidProduct(incoming(), storeId)
+          && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(storeId) && isValidId(productId)
+          && isValidProduct(incoming(), storeId)
+          && isStoreMember(storeId)
+          && incoming().storeId == existing().storeId
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin() ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'price', 'lowStockThreshold', 'criticalLowStockThreshold', 'barcode', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt']) ||
+            (existing().isArchived == false && incoming().isArchived == true && incoming().diff(existing()).affectedKeys().hasOnly(['isArchived', 'updatedAt'])) ||
+            (isStoreOwner(storeId) && existing().isArchived == true && incoming().isArchived == false && incoming().diff(existing()).affectedKeys().hasOnly(['isArchived', 'updatedAt']))
+          );
+        allow delete: if false;
+      }
+
+      match /shifts/{shiftId} {
+        allow get: if isVerified() && isValidId(storeId) && isValidId(shiftId) && (isStoreMember(storeId) || isAdmin());
+        allow list: if isVerified() && (
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.memberUids ||
+          isAdmin()
+        );
+        allow create: if isVerified() && isValidId(storeId) && isValidId(shiftId)
+          && isValidShift(incoming(), storeId)
+          && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+          && incoming().openedByUid == request.auth.uid
+          && incoming().status == 'open'
+          && incoming().openedAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(storeId) && isValidId(shiftId)
+          && isValidShift(incoming(), storeId)
+          && isStoreMember(storeId)
+          && (existing().status != 'closed' || isAdmin())
+          && incoming().storeId == existing().storeId
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().openedByUid == existing().openedByUid
+          && incoming().openingCash == existing().openingCash
+          && incoming().openedAt == existing().openedAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin() ||
+            (existing().status == 'open'
+              && incoming().status == 'closed'
+              && incoming().closedAt == request.time
+              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'closingCash', 'expectedCash', 'difference', 'closedAt', 'updatedAt']))
+          );
+        allow delete: if false;
+      }
+
+      match /sales/{saleId} {
+        allow get: if isVerified() && isValidId(storeId) && isValidId(saleId) && (isStoreMember(storeId) || isAdmin());
+        allow list: if isVerified() && (
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.memberUids ||
+          isAdmin()
+        );
+        allow create: if isVerified() && isValidId(storeId) && isValidId(saleId)
+          && isValidSale(incoming(), storeId)
+          && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+          && incoming().cashierUid == request.auth.uid
+          && exists(/databases/$(database)/documents/stores/$(storeId)/shifts/$(incoming().shiftId))
+          && incoming().status == 'completed'
+          && incoming().returnedTotal == 0
+          && incoming().netTotal == incoming().total
+          && incoming().paid >= incoming().total
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(storeId) && isValidId(saleId)
+          && isValidSale(incoming(), storeId)
+          && isStoreMember(storeId)
+          && (existing().status != 'returned' || isAdmin())
+          && incoming().storeId == existing().storeId
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().shiftId == existing().shiftId
+          && incoming().cashierUid == existing().cashierUid
+          && incoming().total == existing().total
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin() ||
+            (incoming().returnedTotal > existing().returnedTotal
+              && incoming().netTotal == incoming().total - incoming().returnedTotal
+              && incoming().status in ['partially_returned', 'returned']
+              && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'returnedTotal', 'netTotal', 'status', 'updatedAt']))
+          );
+        allow delete: if false;
+
+        match /returns/{returnId} {
+          allow get: if isVerified() && isValidId(storeId) && isValidId(saleId) && isValidId(returnId) && (isStoreMember(storeId) || isAdmin());
+          allow list: if isVerified() && (
+            resource.data.ownerUid == request.auth.uid ||
+            request.auth.uid in resource.data.memberUids ||
+            isAdmin()
+          );
+          allow create: if isVerified() && isValidId(storeId) && isValidId(saleId) && isValidId(returnId)
+            && isValidSaleReturn(incoming(), storeId, saleId)
+            && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+            && existsAfter(/databases/$(database)/documents/stores/$(storeId)/sales/$(saleId))
+            && incoming().cashierUid == request.auth.uid
+            && incoming().createdAt == request.time;
+          allow update, delete: if false;
+        }
+      }
+
+      match /stockMovements/{movementId} {
+        allow get: if isVerified() && isValidId(storeId) && isValidId(movementId) && (isStoreMember(storeId) || isAdmin());
+        allow list: if isVerified() && (
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.memberUids ||
+          isAdmin()
+        );
+        allow create: if isVerified() && isValidId(storeId) && isValidId(movementId)
+          && isValidStockMovement(incoming(), storeId)
+          && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+          && existsAfter(/databases/$(database)/documents/stores/$(storeId)/products/$(incoming().productId))
+          && incoming().createdByUid == request.auth.uid
+          && incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
+
+      match /scannerSessions/{sessionId} {
+        allow get: if isVerified() && isValidId(storeId) && isValidId(sessionId) && (isStoreMember(storeId) || isAdmin());
+        allow list: if isVerified() && (
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.memberUids ||
+          isAdmin()
+        );
+        allow create: if isVerified() && isValidId(storeId) && isValidId(sessionId)
+          && isValidScannerSession(incoming(), storeId)
+          && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+          && incoming().createdAt == request.time;
+        allow update: if isVerified() && isValidId(storeId) && isValidId(sessionId)
+          && isValidScannerSession(incoming(), storeId)
+          && isStoreMember(storeId)
+          && incoming().storeId == existing().storeId
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().tokenHash == existing().tokenHash
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['active']);
+        allow delete: if isVerified() && isValidId(storeId) && isValidId(sessionId) && (isStoreMember(storeId) || isAdmin());
+
+        match /scans/{scanId} {
+          allow get: if isVerified() && isValidId(storeId) && isValidId(sessionId) && isValidId(scanId) && (isStoreMember(storeId) || isAdmin());
+          allow list: if isVerified() && (
+            resource.data.ownerUid == request.auth.uid ||
+            request.auth.uid in resource.data.memberUids ||
+            isAdmin()
+          );
+          allow create: if isVerified() && isValidId(storeId) && isValidId(sessionId) && isValidId(scanId)
+            && isValidScannerScan(incoming(), storeId, sessionId)
+            && isStoreMemberAfterForCreate(storeId, incoming().ownerUid)
+            && exists(/databases/$(database)/documents/stores/$(storeId)/scannerSessions/$(sessionId))
+            && incoming().createdAt == request.time;
+          allow update, delete: if false;
+        }
+      }
+    }
+  }
+}

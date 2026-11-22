@@ -1,0 +1,534 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user profile linked to a primary store.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "store"]
+        },
+        "primaryStoreId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "role", "primaryStoreId", "createdAt", "updatedAt"]
+    },
+    "Store": {
+      "title": "Store",
+      "description": "Retail store or branch managed by an owner.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "UIDs authorized to operate this store."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "isPrimary": {
+          "type": "boolean"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "branchEmail": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "barcodeSeq": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "memberUids", "name", "isPrimary", "active", "branchEmail", "barcodeSeq", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Catalog product belonging to a store.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "price": {
+          "type": "number"
+        },
+        "stock": {
+          "type": "integer"
+        },
+        "lowStockThreshold": {
+          "type": "integer"
+        },
+        "criticalLowStockThreshold": {
+          "type": "integer",
+          "description": "Custom per-product critical low stock threshold."
+        },
+        "barcode": {
+          "type": "string",
+          "pattern": "^[0-9]{8,13}$",
+          "minLength": 8,
+          "maxLength": 13
+        },
+        "isArchived": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "ownerUid", "memberUids", "name", "category", "price", "stock", "lowStockThreshold", "barcode", "isArchived", "createdAt", "updatedAt"]
+    },
+    "Shift": {
+      "title": "Shift",
+      "description": "Cashier shift session tracking opening and closing cash.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed"]
+        },
+        "openingCash": {
+          "type": "integer"
+        },
+        "closingCash": {
+          "type": "integer"
+        },
+        "expectedCash": {
+          "type": "integer"
+        },
+        "difference": {
+          "type": "integer"
+        },
+        "openedByUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "openedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "closedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "ownerUid", "memberUids", "status", "openingCash", "openedByUid", "openedAt", "updatedAt"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Completed POS sale transaction with split payments and return totals.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "shiftId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cashierUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "total": {
+          "type": "number"
+        },
+        "paid": {
+          "type": "number"
+        },
+        "cashTendered": {
+          "type": "number"
+        },
+        "cashAmount": {
+          "type": "number"
+        },
+        "change": {
+          "type": "number"
+        },
+        "payments": {
+          "type": "array"
+        },
+        "items": {
+          "type": "array"
+        },
+        "returnedTotal": {
+          "type": "number"
+        },
+        "netTotal": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "partially_returned", "returned"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "ownerUid", "memberUids", "shiftId", "cashierUid", "total", "paid", "cashTendered", "cashAmount", "change", "payments", "items", "returnedTotal", "netTotal", "status", "createdAt", "updatedAt"]
+    },
+    "SaleReturn": {
+      "title": "SaleReturn",
+      "description": "Item return record linked to a sale transaction.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "saleId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "shiftId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cashierUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "amount": {
+          "type": "number"
+        },
+        "cashAmount": {
+          "type": "number"
+        },
+        "payments": {
+          "type": "array"
+        },
+        "items": {
+          "type": "array"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "saleId", "ownerUid", "memberUids", "shiftId", "cashierUid", "amount", "cashAmount", "payments", "items", "reason", "createdAt"]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Audit log entry for product stock changes.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "productId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "productName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "type": {
+          "type": "string",
+          "enum": ["initial", "in", "adjustment", "sale", "return"]
+        },
+        "quantity": {
+          "type": "integer"
+        },
+        "stockBefore": {
+          "type": "integer"
+        },
+        "stockAfter": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "saleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "returnId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdByUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "ownerUid", "memberUids", "productId", "productName", "type", "quantity", "stockBefore", "stockAfter", "reason", "createdByUid", "createdAt"]
+    },
+    "ScannerSession": {
+      "title": "ScannerSession",
+      "description": "Temporary remote phone scanner pairing session.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "tokenHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "ownerUid", "memberUids", "tokenHash", "active", "createdAt", "expiresAt"]
+    },
+    "ScannerScan": {
+      "title": "ScannerScan",
+      "description": "Scanned barcode event submitted from a paired phone.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sessionId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "barcode": {
+          "type": "string",
+          "pattern": "^[0-9]{8,13}$",
+          "minLength": 8,
+          "maxLength": 13
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["storeId", "sessionId", "ownerUid", "memberUids", "barcode", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile documents keyed by Firebase Auth UID."
+    },
+    "/stores/{storeId}": {
+      "schema": { "$ref": "#/entities/Store" },
+      "description": "Store documents owned by authenticated users."
+    },
+    "/stores/{storeId}/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Product inventory items belonging to a store."
+    },
+    "/stores/{storeId}/shifts/{shiftId}": {
+      "schema": { "$ref": "#/entities/Shift" },
+      "description": "Cashier shift records belonging to a store."
+    },
+    "/stores/{storeId}/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Sales transactions belonging to a store."
+    },
+    "/stores/{storeId}/sales/{saleId}/returns/{returnId}": {
+      "schema": { "$ref": "#/entities/SaleReturn" },
+      "description": "Return records associated with a specific sale."
+    },
+    "/stores/{storeId}/stockMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/StockMovement" },
+      "description": "Inventory stock movement ledger for a store."
+    },
+    "/stores/{storeId}/scannerSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/ScannerSession" },
+      "description": "Remote phone barcode scanner pairing sessions."
+    },
+    "/stores/{storeId}/scannerSessions/{sessionId}/scans/{scanId}": {
+      "schema": { "$ref": "#/entities/ScannerScan" },
+      "description": "Barcodes scanned into a pairing session."
+    }
+  }
+}

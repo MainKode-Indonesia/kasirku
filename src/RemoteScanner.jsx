@@ -1,31 +1,50 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { onAuthStateChanged, signInWithPopup } from "firebase/auth";
 import { AlertCircle, Barcode, Check, Camera, Smartphone } from "lucide-react";
-import { request } from "./api.js";
+import { auth, googleAuthProvider } from "./firebase.js";
+import { submitRemoteScan } from "./firestoreService.js";
 import { useCameraScanner } from "./useCameraScanner.js";
 
 function readPairingCredentials() {
   const params = new URLSearchParams(window.location.hash.slice(1));
-  return { id: params.get("id") ?? "", token: params.get("token") ?? "" };
+  return {
+    id: params.get("id") ?? "",
+    storeId: params.get("storeId") ?? "",
+    token: params.get("token") ?? "",
+  };
 }
 
 function RemoteScanner() {
   const [credentials] = useState(readPairingCredentials);
+  const [firebaseUser, setFirebaseUser] = useState(() => auth.currentUser);
+  const [authReady, setAuthReady] = useState(false);
   const [active, setActive] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(
-    credentials.id && credentials.token ? "" : "Link pemindai tidak lengkap. Pindai QR dari layar kasir PC.",
+    credentials.id && credentials.storeId && credentials.token
+      ? ""
+      : "Link pemindai tidak lengkap. Pindai QR dari layar kasir PC.",
   );
   const [status, setStatus] = useState("Siap dihubungkan ke kasir PC.");
   const [lastBarcode, setLastBarcode] = useState("");
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      setAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const sendBarcode = useCallback(async (barcode) => {
     setSending(true);
     setStatus("Mengirim barcode ke kasir...");
     try {
-      await request(`/api/scanner-sessions/${credentials.id}/scans`, {
-        method: "POST",
-        headers: { "X-Scanner-Token": credentials.token },
-        body: JSON.stringify({ barcode }),
+      await submitRemoteScan({
+        storeId: credentials.storeId,
+        sessionId: credentials.id,
+        token: credentials.token,
+        barcode,
       });
       setLastBarcode(barcode);
       setStatus("Barcode terkirim. Tekan tombol di bawah untuk scan berikutnya.");
@@ -39,9 +58,9 @@ function RemoteScanner() {
     }
   }, [credentials]);
 
-  const camera = useCameraScanner(active && !error, sendBarcode);
+  const camera = useCameraScanner(active && !error && Boolean(firebaseUser), sendBarcode);
   const cameraError = camera.error;
-  const canStart = Boolean(credentials.id && credentials.token) && !error && !cameraError && !sending;
+  const canStart = Boolean(credentials.id && credentials.storeId && credentials.token && firebaseUser) && !error && !cameraError && !sending;
 
   function startScanning() {
     setError("");
@@ -52,6 +71,15 @@ function RemoteScanner() {
   function retryCamera() {
     setError("");
     camera.retry();
+  }
+
+  async function signInGoogle() {
+    setError("");
+    try {
+      await signInWithPopup(auth, googleAuthProvider);
+    } catch (authError) {
+      setError(authError.message || "Gagal masuk dengan Google.");
+    }
   }
 
   return (
@@ -72,7 +100,7 @@ function RemoteScanner() {
           {!active && !error && (
             <div className="remote-camera-placeholder">
               <Camera size={28} />
-              <span>Kamera belum aktif</span>
+              <span>{firebaseUser ? "Kamera belum aktif" : "Masuk Google untuk memulai"}</span>
             </div>
           )}
           {(error || cameraError) && (
@@ -84,7 +112,11 @@ function RemoteScanner() {
           <span>{error || cameraError || status}</span>
         </div>
         {lastBarcode && !error && <div className="remote-last-scan">Barcode terakhir <strong>{lastBarcode}</strong></div>}
-        {error ? null : cameraError ? (
+        {authReady && !firebaseUser ? (
+          <button className="primary-button remote-action-button" onClick={signInGoogle}>
+            Masuk dengan Google
+          </button>
+        ) : error ? null : cameraError ? (
           <button className="primary-button remote-action-button" onClick={retryCamera}>
             <Camera size={17} /> Coba lagi
           </button>
