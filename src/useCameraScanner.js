@@ -43,29 +43,43 @@ export function useCameraScanner(active, onScan, options = true) {
           BarcodeFormat.UPC_A,
           BarcodeFormat.UPC_E,
         ];
-        controls = await reader.decodeFromConstraints(
-          { video: { facingMode: { ideal: facingMode } } },
-          videoRef.current,
-          (result, _decodeError, scannerControls) => {
-            if (!running || !result) return;
-            const text = result.getText();
-            if (stopOnScan) {
-              if (hasScanned) return;
-              hasScanned = true;
-              scannerControls.stop();
-              onScanRef.current(text);
-            } else {
-              const now = Date.now();
-              if (text === lastScannedRef.current && now - lastScanTimeRef.current < 1500) {
-                return;
-              }
-              lastScannedRef.current = text;
-              lastScanTimeRef.current = now;
-              onScanRef.current(text);
+
+        const scanCallback = (result, _decodeError, scannerControls) => {
+          if (!running || !result) return;
+          const text = result.getText();
+          if (stopOnScan) {
+            if (hasScanned) return;
+            hasScanned = true;
+            scannerControls.stop();
+            onScanRef.current(text);
+          } else {
+            const now = Date.now();
+            if (text === lastScannedRef.current && now - lastScanTimeRef.current < 1500) {
+              return;
             }
-          },
-        );
-        if (!running) controls.stop();
+            lastScannedRef.current = text;
+            lastScanTimeRef.current = now;
+            onScanRef.current(text);
+          }
+        };
+
+        // Try with facingMode constraints first; if DroidCam or virtual webcam fails, fallback to { video: true } to prevent green screen / YUV decoding failure
+        try {
+          controls = await reader.decodeFromConstraints(
+            { video: { facingMode: { ideal: facingMode } } },
+            videoRef.current,
+            scanCallback,
+          );
+        } catch (_constraintErr) {
+          if (!running) return;
+          controls = await reader.decodeFromConstraints(
+            { video: true },
+            videoRef.current,
+            scanCallback,
+          );
+        }
+
+        if (!running) controls?.stop();
       } catch (cameraError) {
         if (!running) return;
         if (cameraError.name === "NotAllowedError") {
@@ -73,7 +87,7 @@ export function useCameraScanner(active, onScan, options = true) {
         } else if (cameraError.name === "NotFoundError") {
           setError("Kamera tidak ditemukan di perangkat ini.");
         } else if (cameraError.name === "NotReadableError") {
-          setError("Kamera sedang digunakan aplikasi lain. Tutup aplikasi tersebut lalu coba lagi.");
+          setError("Kamera sedang digunakan aplikasi lain (seperti DroidCam). Tutup aplikasi lain lalu coba lagi.");
         } else {
           setError(cameraError.message || "Kamera tidak dapat dibuka.");
         }
