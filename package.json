@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run build && node server/index.js",
+    "start": "node server/index.js",
     "api": "node server/index.js",
     "create-owner": "node server/create-owner.js",
     "build": "vite build",

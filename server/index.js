@@ -2,11 +2,14 @@ import "dotenv/config";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import express from "express";
 import { rateLimit } from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import { MongoClient, ObjectId } from "mongodb";
 import { hashPassword, verifyPassword } from "./passwords.js";
+import { createMockDatabase } from "./mock-db.js";
 import {
   allocateRefund,
   ean13CheckDigit,
@@ -14,19 +17,28 @@ import {
 } from "./domain.js";
 
 const app = express();
-const mongoClient = new MongoClient(
-  process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/kasirku",
-);
+const mongoUri = process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/kasirku";
+const mongoClient = new MongoClient(mongoUri, {
+  serverSelectionTimeoutMS: 1500,
+  connectTimeoutMS: 1500,
+});
 const sessionCookie = "kasirku_session";
 const sessionMaxAge = 8 * 60 * 60 * 1000;
-const cookieOptions = {
-  httpOnly: true,
-  secure: process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production",
-  sameSite: "strict",
-  path: "/",
-};
+function getCookieOptions(req) {
+  const isHttps = Boolean(
+    req?.secure
+      || req?.get?.("x-forwarded-proto") === "https"
+      || process.env.COOKIE_SECURE === "true",
+  );
+  return {
+    httpOnly: true,
+    secure: isHttps,
+    sameSite: isHttps ? "none" : "lax",
+    path: "/",
+  };
+}
 
-if (process.env.TRUST_PROXY === "1") app.set("trust proxy", 1);
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json({ limit: "32kb" }));
 app.use(cookieParser());
@@ -49,10 +61,17 @@ let scannerScansCollection;
 let stockMovementsCollection;
 let shiftsCollection;
 
+const fallbackJwtSecret = randomBytes(32).toString("hex");
+let warnedMissingJwtSecret = false;
+
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
   if (!secret || Buffer.byteLength(secret) < 32) {
-    throw new Error("JWT_SECRET wajib diisi dengan rahasia acak minimal 32 byte.");
+    if (!warnedMissingJwtSecret) {
+      warnedMissingJwtSecret = true;
+      console.warn("[AI Studio] JWT_SECRET tidak diisi/kurang dari 32 byte — menggunakan secret sementara untuk sesi proses ini.");
+    }
+    return fallbackJwtSecret;
   }
   return secret;
 }
@@ -250,11 +269,11 @@ async function requireAuth(req, res, next) {
   try {
     claims = jwt.verify(token, getJwtSecret());
   } catch {
-    res.clearCookie(sessionCookie, cookieOptions);
+    res.clearCookie(sessionCookie, getCookieOptions(req));
     return res.status(401).json({ error: "Sesi telah berakhir. Silakan masuk kembali." });
   }
   if (typeof claims !== "object" || typeof claims.sub !== "string" || !ObjectId.isValid(claims.sub)) {
-    res.clearCookie(sessionCookie, cookieOptions);
+    res.clearCookie(sessionCookie, getCookieOptions(req));
     return res.status(401).json({ error: "Sesi masuk tidak valid. Silakan masuk kembali." });
   }
 
@@ -344,7 +363,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res) => {
       getJwtSecret(),
       { subject: user._id.toString(), expiresIn: "8h" },
     );
-    res.cookie(sessionCookie, token, { ...cookieOptions, maxAge: sessionMaxAge });
+    res.cookie(sessionCookie, token, { ...getCookieOptions(req), maxAge: sessionMaxAge });
     res.json({ user: serializeUser(user, store) });
   } catch (error) {
     console.error("Gagal masuk:", error);
@@ -368,7 +387,7 @@ app.post("/api/auth/logout", async (req, res) => {
         // Token tidak valid/expired tetap harus dihapus dari browser.
       }
     }
-    res.clearCookie(sessionCookie, cookieOptions);
+    res.clearCookie(sessionCookie, getCookieOptions(req));
     res.status(204).end();
   } catch (error) {
     console.error("Gagal keluar:", error);
@@ -416,7 +435,7 @@ app.post("/api/auth/change-password", requireAuth, async (req, res) => {
     if (updated.matchedCount !== 1) {
       return res.status(409).json({ error: "Akun berubah. Silakan masuk kembali." });
     }
-    res.clearCookie(sessionCookie, cookieOptions);
+    res.clearCookie(sessionCookie, getCookieOptions(req));
     res.status(204).end();
   } catch (error) {
     console.error("Gagal mengganti password:", error);
@@ -1802,11 +1821,36 @@ app.post("/api/sales", async (req, res) => {
   }
 });
 
-const port = Number(process.env.PORT ?? 3001);
+const distDir = path.resolve(process.cwd(), "dist");
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get("*", (req, res) => {
+    if (req.path.startsWith("/api")) {
+      return res.status(404).json({ error: "Endpoint tidak ditemukan." });
+    }
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+}
+
+const port = Number(process.env.PORT ?? 3000);
+let usingMockDb = false;
+
 try {
   getJwtSecret();
-  await mongoClient.connect();
-  const db = mongoClient.db();
+  let db;
+  try {
+    await mongoClient.connect();
+    db = mongoClient.db();
+    console.log("API KasirKu terhubung ke MongoDB.");
+  } catch (mongoError) {
+    usingMockDb = true;
+    await mongoClient.close().catch(() => {});
+    console.warn(
+      `[AI Studio] MongoDB tidak terhubung (${mongoError.message}) — menggunakan database in-memory sementara.`,
+    );
+    db = await createMockDatabase();
+  }
+
   usersCollection = db.collection("users");
   storesCollection = db.collection("stores");
   productsCollection = db.collection("products");
@@ -1846,14 +1890,16 @@ try {
     scannerScansCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     scannerScansCollection.createIndex({ sessionId: 1, _id: 1 }),
   ]);
-  app.listen(port, "127.0.0.1", () => console.log(`API KasirKu terhubung ke MongoDB di http://127.0.0.1:${port}`));
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`KasirKu berjalan di http://0.0.0.0:${port}${usingMockDb ? " (mode in-memory)" : ""}`);
+  });
 } catch (error) {
-  console.error("API gagal dimulai. Periksa MONGODB_URI, JWT_SECRET, dan MongoDB.", error);
-  await mongoClient.close();
+  console.error("API gagal dimulai.", error);
+  await mongoClient.close().catch(() => {});
   process.exitCode = 1;
 }
 
 process.on("SIGINT", async () => {
-  await mongoClient.close();
+  await mongoClient.close().catch(() => {});
   process.exit(0);
 });
