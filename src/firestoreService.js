@@ -14,7 +14,12 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { allocateRefund, ean13CheckDigit, validateSalePayment } from "../server/domain.js";
+import {
+  allocateRefund,
+  buildDailyRevenueTrend,
+  ean13CheckDigit,
+  validateSalePayment,
+} from "../server/domain.js";
 import { db, handleFirestoreError, OperationType } from "./firebase.js";
 
 function toDate(value) {
@@ -369,7 +374,7 @@ export async function createBranchStore({ ownerUid, name, branchEmail }) {
   if (!cleanName || cleanName.length > 80) {
     throw new Error("Nama toko wajib diisi (maksimal 80 karakter).");
   }
-  if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+  if (cleanEmail.length > 120 || (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))) {
     throw new Error("Masukkan email admin cabang yang valid atau kosongkan.");
   }
 
@@ -402,6 +407,53 @@ export async function createBranchStore({ ownerUid, name, branchEmail }) {
     };
   } catch (error) {
     if (isFirestoreError(error)) handleFirestoreError(error, OperationType.CREATE, path);
+    throw error;
+  }
+}
+
+export async function updateStoreDetails({ storeId, ownerUid, name, branchEmail }) {
+  const cleanName = String(name ?? "").trim();
+  const cleanEmail = String(branchEmail ?? "").trim().toLowerCase();
+  if (!cleanName || cleanName.length > 80) {
+    throw new Error("Nama toko wajib diisi (maksimal 80 karakter).");
+  }
+  if (cleanEmail.length > 120 || (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))) {
+    throw new Error("Masukkan email admin cabang yang valid atau kosongkan.");
+  }
+
+  const storePath = `stores/${storeId}`;
+  try {
+    const storeRef = doc(db, "stores", storeId);
+    const storeSnap = await getDoc(storeRef);
+    if (!storeSnap.exists()) {
+      throw new Error("Toko tidak ditemukan.");
+    }
+    const storeData = storeSnap.data();
+    if (storeData.ownerUid !== ownerUid) {
+      throw new Error("Hanya pemilik utama yang dapat mengubah data toko.");
+    }
+
+    const existingSnap = await getDocs(
+      query(collection(db, "stores"), where("ownerUid", "==", ownerUid)),
+    );
+    if (existingSnap.docs.some((d) => d.id !== storeId && d.data().name.toLowerCase() === cleanName.toLowerCase())) {
+      throw new Error("Nama toko tersebut sudah digunakan.");
+    }
+
+    const isPrimary = Boolean(storeData.isPrimary);
+    const updates = isPrimary
+      ? { name: cleanName, updatedAt: serverTimestamp() }
+      : { name: cleanName, branchEmail: cleanEmail, updatedAt: serverTimestamp() };
+
+    await updateDoc(storeRef, updates);
+    return {
+      id: storeId,
+      name: cleanName,
+      isPrimary,
+      accountEmail: isPrimary ? "" : cleanEmail,
+    };
+  } catch (error) {
+    if (isFirestoreError(error)) handleFirestoreError(error, OperationType.UPDATE, storePath);
     throw error;
   }
 }
@@ -1193,9 +1245,11 @@ export async function fetchReport({ stores, selectedStoreId, reportAllStores, ui
   const revenueByMethod = new Map();
   const returnedByMethod = new Map();
   const storeSummaries = [];
+  const allTargetSales = [];
 
   for (const store of targetStores) {
     const salesList = await loadStoreSalesWithReturns(store.id, uid);
+    allTargetSales.push(...salesList);
     let revenue = 0;
     let transactions = 0;
     let returnedTotal = 0;
@@ -1243,9 +1297,24 @@ export async function fetchReport({ stores, selectedStoreId, reportAllStores, ui
   const revenue = storeSummaries.reduce((sum, s) => sum + s.revenue, 0);
   const returnedTotal = storeSummaries.reduce((sum, s) => sum + s.returned_total, 0);
 
+  let trendFrom = from;
+  if (from && to && from === to) {
+    const base = new Date(`${to}T00:00:00`);
+    base.setDate(base.getDate() - 6);
+    trendFrom = `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-${String(base.getDate()).padStart(2, "0")}`;
+  }
+  const dailyTrend = buildDailyRevenueTrend({
+    sales: allTargetSales,
+    from: trendFrom,
+    to,
+  });
+
   return {
     from,
     to,
+    trend_from: trendFrom,
+    trend_to: to,
+    daily_trend: dailyTrend,
     revenue,
     returned_total: returnedTotal,
     net_revenue: revenue - returnedTotal,
@@ -1306,7 +1375,7 @@ export async function createScannerSession({ storeId }) {
 
     const token = randomHex(32);
     const tokenHash = await sha256Hex(token);
-    const expiresAt = Timestamp.fromDate(new Date(Date.now() + 30 * 60 * 1000));
+    const expiresAt = Timestamp.fromDate(new Date("2099-12-31T23:59:59.000Z"));
     const sessionRef = doc(collection(db, path));
 
     await setDoc(sessionRef, {
@@ -1331,6 +1400,24 @@ export async function createScannerSession({ storeId }) {
   }
 }
 
+export async function isScannerSessionActive({ storeId, sessionId, token }) {
+  const path = `stores/${storeId}/scannerSessions/${sessionId}`;
+  try {
+    const sessionSnap = await getDoc(doc(db, "stores", storeId, "scannerSessions", sessionId));
+    if (!sessionSnap.exists()) return false;
+    const data = sessionSnap.data();
+    if (!data.active) return false;
+    if (token) {
+      const expectedHash = await sha256Hex(token);
+      if (data.tokenHash !== expectedHash) return false;
+    }
+    return true;
+  } catch (error) {
+    if (isFirestoreError(error)) handleFirestoreError(error, OperationType.GET, path);
+    return false;
+  }
+}
+
 export async function stopScannerSession({ storeId, sessionId }) {
   const path = `stores/${storeId}/scannerSessions/${sessionId}`;
   try {
@@ -1340,12 +1427,36 @@ export async function stopScannerSession({ storeId, sessionId }) {
   }
 }
 
-export function subscribeScannerScans({ storeId, sessionId, uid, onScans, onError }) {
+export function subscribeScannerSession({ storeId, sessionId, onEnded, onError }) {
+  const path = `stores/${storeId}/scannerSessions/${sessionId}`;
+  return onSnapshot(
+    doc(db, "stores", storeId, "scannerSessions", sessionId),
+    (snapshot) => {
+      if (!snapshot.exists() || !snapshot.data()?.active) {
+        onEnded();
+      }
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.GET, path);
+      } catch (wrapped) {
+        onError?.(wrapped);
+      }
+    },
+  );
+}
+
+export function subscribeScannerScans({ storeId, sessionId, uid, skipInitial = false, onScans, onError }) {
   const path = `stores/${storeId}/scannerSessions/${sessionId}/scans`;
   const q = query(collection(db, path), where("memberUids", "array-contains", uid));
+  let initialized = false;
   return onSnapshot(
     q,
     (snapshot) => {
+      if (!initialized) {
+        initialized = true;
+        if (skipInitial) return;
+      }
       const added = snapshot
         .docChanges()
         .filter((change) => change.type === "added")
@@ -1380,7 +1491,7 @@ export async function submitRemoteScan({ storeId, sessionId, token, barcode }) {
     }
     const sData = sessionSnap.data();
     const expectedHash = await sha256Hex(token);
-    if (!sData.active || sData.tokenHash !== expectedHash || toDate(sData.expiresAt).getTime() <= Date.now()) {
+    if (!sData.active || sData.tokenHash !== expectedHash) {
       throw new Error("Sesi pemindai sudah berakhir. Minta kode baru dari kasir.");
     }
     const scanRef = doc(collection(db, `${sessionPath}/scans`));

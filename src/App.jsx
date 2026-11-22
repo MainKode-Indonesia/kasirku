@@ -47,6 +47,7 @@ import {
   fetchShifts,
   fetchStockMovements,
   fetchStores,
+  isScannerSessionActive,
   openShift as openShiftInStore,
   setProductArchived,
   stopScannerSession,
@@ -54,7 +55,9 @@ import {
   subscribeScannerScans,
   toggleStoreActive,
   updateProduct,
+  updateStoreDetails,
 } from "./firestoreService.js";
+import RevenueTrendChart from "./components/RevenueTrendChart.jsx";
 import { useCameraScanner } from "./useCameraScanner.js";
 
 const rupiah = new Intl.NumberFormat("id-ID", {
@@ -145,6 +148,7 @@ function CashierApp({ user, onLogout }) {
   }]);
   const [selectedStoreId, setSelectedStoreId] = useState(user.storeId);
   const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
   const [storeAccounts, setStoreAccounts] = useState([]);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentSplits, setPaymentSplits] = useState({ cash: "", qris: "", transfer: "" });
@@ -187,6 +191,7 @@ function CashierApp({ user, onLogout }) {
   const [editingProduct, setEditingProduct] = useState(null);
   const [showArchivedProducts, setShowArchivedProducts] = useState(false);
   const [showStoreForm, setShowStoreForm] = useState(false);
+  const [editingStore, setEditingStore] = useState(null);
   const [storeForm, setStoreForm] = useState({ name: "", email: "" });
   const [productForm, setProductForm] = useState({
     name: "",
@@ -356,16 +361,21 @@ function CashierApp({ user, onLogout }) {
   });
 
   const loadReport = useCallback(async () => {
-    const bounds = getDateRangeBounds(dateRange);
-    setReport(await fetchReport({
-      stores,
-      selectedStoreId,
-      reportAllStores: reportScope === "all",
-      uid: user.id,
-      ...bounds,
-      from: dateRange.from,
-      to: dateRange.to,
-    }));
+    setReportLoading(true);
+    try {
+      const bounds = getDateRangeBounds(dateRange);
+      setReport(await fetchReport({
+        stores,
+        selectedStoreId,
+        reportAllStores: reportScope === "all",
+        uid: user.id,
+        ...bounds,
+        from: dateRange.from,
+        to: dateRange.to,
+      }));
+    } finally {
+      setReportLoading(false);
+    }
   }, [dateRange, reportScope, selectedStoreId, stores, user.id]);
 
   const loadShifts = useCallback(async () => {
@@ -407,6 +417,45 @@ function CashierApp({ user, onLogout }) {
     }));
   }, [dateRange, selectedStoreId, user.id]);
 
+  const scannerStorageKey = `kasirku_scanner_session:${user.id}:${selectedStoreId}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    let stored = null;
+    try {
+      const raw = window.localStorage.getItem(scannerStorageKey);
+      if (raw) stored = JSON.parse(raw);
+    } catch {
+      stored = null;
+    }
+    if (!stored?.id || !stored?.storeId || !stored?.token || stored.storeId !== selectedStoreId) {
+      setRemoteSession(null);
+      return undefined;
+    }
+    isScannerSessionActive({
+      storeId: stored.storeId,
+      sessionId: stored.id,
+      token: stored.token,
+    }).then((active) => {
+      if (cancelled) return;
+      if (active) {
+        setRemoteSession({ ...stored, restored: true });
+      } else {
+        try {
+          window.localStorage.removeItem(scannerStorageKey);
+        } catch {
+          // ignore storage errors
+        }
+        setRemoteSession(null);
+      }
+    }).catch(() => {
+      if (!cancelled) setRemoteSession(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [scannerStorageKey, selectedStoreId]);
+
   const pairingUrl = remoteSession
     ? `${window.location.origin}/scanner#${new URLSearchParams({
         id: remoteSession.id,
@@ -421,6 +470,7 @@ function CashierApp({ user, onLogout }) {
       storeId: remoteSession.storeId,
       sessionId: remoteSession.id,
       uid: user.id,
+      skipInitial: Boolean(remoteSession.restored),
       onScans: (events) => {
         for (const event of events) {
           if (processedScanIds.current.has(event.id)) continue;
@@ -430,11 +480,16 @@ function CashierApp({ user, onLogout }) {
       },
       onError: (pollError) => {
         setError(pollError.message);
+        try {
+          window.localStorage.removeItem(scannerStorageKey);
+        } catch {
+          // ignore storage errors
+        }
         setRemoteSession(null);
       },
     });
     return () => unsubscribe();
-  }, [remoteSession, processBarcode, user.id]);
+  }, [remoteSession, processBarcode, scannerStorageKey, user.id]);
 
   useEffect(() => {
     if (!printProduct) return undefined;
@@ -507,7 +562,12 @@ function CashierApp({ user, onLogout }) {
     try {
       const session = await createScannerSession({ storeId: selectedStoreId });
       processedScanIds.current = new Set();
-      setRemoteSession(session);
+      try {
+        window.localStorage.setItem(scannerStorageKey, JSON.stringify(session));
+      } catch {
+        // ignore storage errors
+      }
+      setRemoteSession({ ...session, restored: false });
       setShowPairing(true);
     } catch (sessionError) {
       setError(sessionError.message);
@@ -517,6 +577,11 @@ function CashierApp({ user, onLogout }) {
   async function stopPhoneScanner() {
     if (!remoteSession) return;
     const session = remoteSession;
+    try {
+      window.localStorage.removeItem(`kasirku_scanner_session:${user.id}:${session.storeId}`);
+    } catch {
+      // ignore storage errors
+    }
     setRemoteSession(null);
     setShowPairing(false);
     try {
@@ -609,22 +674,45 @@ function CashierApp({ user, onLogout }) {
     }
   }
 
-  async function createStore(event) {
+  function openStoreForm(store = null) {
+    setEditingStore(store);
+    setStoreForm(store
+      ? { name: store.name, email: store.accountEmail ?? "" }
+      : { name: "", email: "" });
+    setShowStoreForm(true);
+  }
+
+  async function saveStore(event) {
     event.preventDefault();
+    setError("");
     try {
-      const store = await createBranchStore({
-        ownerUid: user.id,
-        name: storeForm.name,
-        branchEmail: storeForm.email,
-      });
-      setStoreForm({ name: "", email: "" });
-      setShowStoreForm(false);
-      await Promise.all([loadData(), loadStoreAccounts()]);
-      setNotice(
-        store.accountEmail
-          ? `Toko ${store.name} ditambahkan. Admin cabang (${store.accountEmail}) dapat masuk dengan Google.`
-          : `Toko ${store.name} ditambahkan.`,
-      );
+      if (editingStore) {
+        const updated = await updateStoreDetails({
+          storeId: editingStore.id,
+          ownerUid: user.id,
+          name: storeForm.name,
+          branchEmail: storeForm.email,
+        });
+        setStoreForm({ name: "", email: "" });
+        setEditingStore(null);
+        setShowStoreForm(false);
+        await Promise.all([loadData(), loadStoreAccounts()]);
+        setNotice(updated.isPrimary ? `Toko utama ${updated.name} diperbarui.` : `Toko ${updated.name} diperbarui.`);
+      } else {
+        const store = await createBranchStore({
+          ownerUid: user.id,
+          name: storeForm.name,
+          branchEmail: storeForm.email,
+        });
+        setStoreForm({ name: "", email: "" });
+        setShowStoreForm(false);
+        await Promise.all([loadData(), loadStoreAccounts()]);
+        setNotice(
+          store.accountEmail
+            ? `Toko ${store.name} ditambahkan. Admin cabang (${store.accountEmail}) dapat masuk dengan Google.`
+            : `Toko ${store.name} ditambahkan.`,
+        );
+      }
     } catch (storeError) {
       setError(storeError.message);
     }
@@ -973,6 +1061,30 @@ function CashierApp({ user, onLogout }) {
           )}
           {activeTab === "Laporan" && (
             <div className="heading-actions">
+              <div className="range-presets" role="group" aria-label="Pilih rentang cepat">
+                {[
+                  { label: "Hari ini", days: 1 },
+                  { label: "7 hari", days: 7 },
+                  { label: "30 hari", days: 30 },
+                ].map((preset) => {
+                  const endDate = new Date();
+                  const startDate = new Date();
+                  startDate.setDate(endDate.getDate() - (preset.days - 1));
+                  const presetFrom = localDateString(startDate);
+                  const presetTo = localDateString(endDate);
+                  const isActive = dateRange.from === presetFrom && dateRange.to === presetTo;
+                  return (
+                    <button
+                      type="button"
+                      key={preset.days}
+                      className={`range-preset-button ${isActive ? "active" : ""}`}
+                      onClick={() => setDateRange({ from: presetFrom, to: presetTo })}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
               {user.role === "owner" && (
                 <select className="report-scope-select" value={reportScope} onChange={(event) => setReportScope(event.target.value)}>
                   <option value="store">Toko ini</option>
@@ -996,7 +1108,7 @@ function CashierApp({ user, onLogout }) {
             </div>
           )}
           {activeTab === "Toko" && (
-            <button className="primary-button" onClick={() => setShowStoreForm(true)}>
+            <button className="primary-button" onClick={() => openStoreForm()}>
               <Plus size={17} /> Tambah toko
             </button>
           )}
@@ -1325,6 +1437,14 @@ function CashierApp({ user, onLogout }) {
             <div className="report-card"><span className="stat-icon lilac"><CreditCard size={19} /></span><span className="stat-caption">PENDAPATAN BERSIH</span><strong>{rupiah.format(Number(report?.net_revenue ?? 0))}</strong><small>Penjualan dikurangi retur</small></div>
             <div className="report-card"><span className="stat-icon mint"><Clock3 size={19} /></span><span className="stat-caption">RENTANG TANGGAL</span><strong>{report?.transactions ?? 0}</strong><small>{dateRange.from} — {dateRange.to}</small></div>
             <div className="report-card"><span className="stat-icon amber"><Boxes size={19} /></span><span className="stat-caption">PRODUK TERDAFTAR</span><strong>{dashboard.product_count}</strong><small>{dashboard.low_stock_count} produk perlu restock</small></div>
+            <RevenueTrendChart
+              data={report?.daily_trend ?? []}
+              from={report?.trend_from ?? dateRange.from}
+              to={report?.trend_to ?? dateRange.to}
+              isSingleDayRange={dateRange.from === dateRange.to}
+              loading={reportLoading}
+              onOpenCashier={() => setActiveTab("Kasir")}
+            />
             <section className="store-report-list">
               <h2>{reportScope === "all" ? "Rincian semua toko" : "Rincian toko"}</h2>
               <div className="store-report-header"><span>TOKO</span><span>KOTOR</span><span>RETUR</span><span>BERSIH</span></div>
@@ -1408,14 +1528,15 @@ function CashierApp({ user, onLogout }) {
                 <div className="store-management-row" key={store.id}>
                   <span className="store-avatar"><ShoppingBag size={16} /></span>
                   <span><strong>{store.name}</strong><small>{store.isPrimary ? `Toko utama · ${user.email}` : `${store.accountEmail || "Tanpa admin cabang"} · ${store.active ? "Aktif" : "Nonaktif"}`}</small></span>
-                  {store.isPrimary
-                    ? <span className="table-category">UTAMA</span>
-                    : (
-                      <div className="store-account-actions">
-                        <button className="secondary-button" onClick={() => toggleStoreStatus(store)}>{store.active ? "Nonaktifkan" : "Aktifkan"}</button>
-                      </div>
+                  {store.isPrimary && <span className="table-category">UTAMA</span>}
+                  <div className="store-account-actions">
+                    <button className="secondary-button" onClick={() => openStoreForm(store)}><Pencil size={14} /> Edit</button>
+                    {store.isPrimary ? (
+                      <button className="secondary-button" onClick={() => { setSelectedStoreId(store.id); setActiveTab("Inventaris"); }}>Kelola</button>
+                    ) : (
+                      <button className="secondary-button" onClick={() => toggleStoreStatus(store)}>{store.active ? "Nonaktifkan" : "Aktifkan"}</button>
                     )}
-                  {store.isPrimary && <button className="secondary-button" onClick={() => { setSelectedStoreId(store.id); setActiveTab("Inventaris"); }}>Kelola</button>}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1592,13 +1713,32 @@ function CashierApp({ user, onLogout }) {
       )}
 
       {showStoreForm && (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowStoreForm(false); }}>
-          <form className="product-modal" onSubmit={createStore}>
-            <div className="modal-heading"><div><span className="modal-icon"><Smartphone size={19} /></span><div><h2>Tambah toko</h2><p>Buat cabang dan opsional izinkan admin cabang masuk dengan Google.</p></div></div><button type="button" className="icon-button" onClick={() => setShowStoreForm(false)} aria-label="Tutup"><X size={19} /></button></div>
-            <label>Nama toko<input required autoFocus placeholder="Contoh: Toko Berkah 2" value={storeForm.name} onChange={(event) => setStoreForm({ ...storeForm, name: event.target.value })} /></label>
-            <label>Email Google admin cabang <span className="optional">(opsional)</span><input type="email" autoComplete="email" placeholder="admin@gmail.com" value={storeForm.email} onChange={(event) => setStoreForm({ ...storeForm, email: event.target.value })} /></label>
-            <div className="barcode-hint"><AlertCircle size={16} /><span>Admin cabang cukup masuk menggunakan akun Google dengan email tersebut.</span></div>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowStoreForm(false)}>Batal</button><button type="submit" className="primary-button"><Plus size={16} /> Buat toko</button></div>
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setShowStoreForm(false); setEditingStore(null); } }}>
+          <form className="product-modal" onSubmit={saveStore}>
+            <div className="modal-heading">
+              <div>
+                <span className="modal-icon"><Smartphone size={19} /></span>
+                <div>
+                  <h2>{editingStore ? (editingStore.isPrimary ? "Edit toko utama" : "Edit cabang toko") : "Tambah toko"}</h2>
+                  <p>{editingStore?.isPrimary ? "Perbarui nama toko utama yang tampil di kasir dan laporan." : editingStore ? "Perbarui nama cabang atau email Google admin cabang." : "Buat cabang dan opsional izinkan admin cabang masuk dengan Google."}</p>
+                </div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => { setShowStoreForm(false); setEditingStore(null); }} aria-label="Tutup"><X size={19} /></button>
+            </div>
+            <label>Nama toko<input required autoFocus maxLength={80} placeholder="Contoh: Toko Berkah 1" value={storeForm.name} onChange={(event) => setStoreForm({ ...storeForm, name: event.target.value })} /></label>
+            {!editingStore?.isPrimary && (
+              <>
+                <label>Email Google admin cabang <span className="optional">(opsional)</span><input type="email" maxLength={120} autoComplete="email" placeholder="admin@gmail.com" value={storeForm.email} onChange={(event) => setStoreForm({ ...storeForm, email: event.target.value })} /></label>
+                <div className="barcode-hint"><AlertCircle size={16} /><span>Admin cabang cukup masuk menggunakan akun Google dengan email tersebut.</span></div>
+              </>
+            )}
+            {editingStore?.isPrimary && (
+              <div className="barcode-hint"><AlertCircle size={16} /><span>Toko utama dikelola langsung oleh akun pemilik ({user.email}).</span></div>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={() => { setShowStoreForm(false); setEditingStore(null); }}>Batal</button>
+              <button type="submit" className="primary-button">{editingStore ? "Simpan perubahan" : <><Plus size={16} /> Buat toko</>}</button>
+            </div>
           </form>
         </div>
       )}
@@ -1651,7 +1791,7 @@ function CashierApp({ user, onLogout }) {
               <span><b>2</b> Pindai QR dengan kamera bawaan HP, lalu izinkan akses kamera di halaman.</span>
               <span><b>3</b> Hasil scan akan masuk otomatis ke keranjang PC.</span>
             </div>
-            <p className="pairing-expiry">Sesi berakhir otomatis dalam 30 menit.</p>
+            <p className="pairing-expiry">Sesi tetap aktif selama belum diputus. Tekan Akhiri sesi untuk memutuskan.</p>
             <div className="modal-actions">
               <button className="secondary-button" onClick={() => setShowPairing(false)}>Tutup</button>
               <button className="primary-button" onClick={stopPhoneScanner}><X size={16} /> Akhiri sesi</button>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-export function useCameraScanner(active, onScan, stopOnScan = true) {
+export function useCameraScanner(active, onScan, options = true) {
+  const stopOnScan = typeof options === "boolean" ? options : (options?.stopOnScan ?? true);
+  const facingMode = typeof options === "object" && options?.facingMode ? options.facingMode : "environment";
   const videoRef = useRef(null);
   const onScanRef = useRef(onScan);
   const [error, setError] = useState("");
@@ -40,7 +42,7 @@ export function useCameraScanner(active, onScan, stopOnScan = true) {
           BarcodeFormat.UPC_E,
         ];
         controls = await reader.decodeFromConstraints(
-          { video: { facingMode: { ideal: "environment" } } },
+          { video: { facingMode: { ideal: facingMode } } },
           videoRef.current,
           (result, _decodeError, scannerControls) => {
             if (!running || hasScanned || !result) return;
@@ -71,7 +73,7 @@ export function useCameraScanner(active, onScan, stopOnScan = true) {
       running = false;
       controls?.stop();
     };
-  }, [active, attempt, stopOnScan]);
+  }, [active, attempt, stopOnScan, facingMode]);
 
   return {
     videoRef,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allocateRefund,
+  buildDailyRevenueTrend,
   ean13CheckDigit,
   validateSalePayment,
 } from "../server/domain.js";
@@ -91,3 +92,29 @@ describe("validateSalePayment", () => {
     })).toThrow("Metode atau nominal");
   });
 });
+
+describe("buildDailyRevenueTrend", () => {
+  it("aggregates completed sales per day and fills missing days with zero", () => {
+    const trend = buildDailyRevenueTrend({
+      from: "2026-11-19",
+      to: "2026-11-21",
+      sales: [
+        { createdAt: "2026-11-19T10:15:00", total: 25_000, netTotal: 25_000, status: "completed" },
+        { createdAt: "2026-11-19T14:30:00", total: 15_000, netTotal: 15_000, status: "completed" },
+        { createdAt: "2026-11-21T09:00:00", total: 50_000, netTotal: 35_000, status: "partially_returned" },
+        { createdAt: "2026-11-21T11:00:00", total: 20_000, netTotal: 0, status: "returned" },
+      ],
+    });
+
+    expect(trend).toEqual([
+      { date: "2026-11-19", revenue: 40_000, transactions: 2 },
+      { date: "2026-11-20", revenue: 0, transactions: 0 },
+      { date: "2026-11-21", revenue: 35_000, transactions: 1 },
+    ]);
+  });
+
+  it("returns an empty array for invalid date bounds", () => {
+    expect(buildDailyRevenueTrend({ sales: [], from: "2026-11-22", to: "2026-11-20" })).toEqual([]);
+  });
+});
+

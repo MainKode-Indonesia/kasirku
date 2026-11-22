@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { onAuthStateChanged, signInWithPopup } from "firebase/auth";
 import { AlertCircle, Barcode, Check, Camera, Smartphone } from "lucide-react";
 import { auth, googleAuthProvider } from "./firebase.js";
-import { submitRemoteScan } from "./firestoreService.js";
+import { submitRemoteScan, subscribeScannerSession } from "./firestoreService.js";
 import { useCameraScanner } from "./useCameraScanner.js";
 
 function readPairingCredentials() {
@@ -36,6 +36,24 @@ function RemoteScanner() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!firebaseUser || !credentials.id || !credentials.storeId) return undefined;
+    const unsubscribe = subscribeScannerSession({
+      storeId: credentials.storeId,
+      sessionId: credentials.id,
+      onEnded: () => {
+        setActive(false);
+        setError("Sesi pemindai telah diputus dari kasir. Pindai QR baru untuk menghubungkan lagi.");
+        setStatus("Sesi pemindai berakhir.");
+      },
+      onError: () => {
+        setActive(false);
+        setError("Tidak dapat mengakses sesi pemindai. Pastikan akun Google sama dengan kasir.");
+      },
+    });
+    return () => unsubscribe();
+  }, [credentials.id, credentials.storeId, firebaseUser]);
+
   const sendBarcode = useCallback(async (barcode) => {
     setSending(true);
     setStatus("Mengirim barcode ke kasir...");
@@ -58,13 +76,13 @@ function RemoteScanner() {
     }
   }, [credentials]);
 
-  const camera = useCameraScanner(active && !error && Boolean(firebaseUser), sendBarcode);
+  const camera = useCameraScanner(active && !error && Boolean(firebaseUser), sendBarcode, { facingMode: "user" });
   const cameraError = camera.error;
   const canStart = Boolean(credentials.id && credentials.storeId && credentials.token && firebaseUser) && !error && !cameraError && !sending;
 
   function startScanning() {
     setError("");
-    setStatus("Arahkan kamera ke barcode produk.");
+    setStatus("Arahkan barcode ke kamera depan di dalam kotak.");
     setActive(true);
   }
 
@@ -95,7 +113,7 @@ function RemoteScanner() {
           <div><h1>Pemindai barcode</h1><p>Hasil scan dikirim langsung ke kasir PC.</p></div>
         </div>
         <div className="remote-camera-view">
-          {active && <video ref={camera.videoRef} autoPlay muted playsInline />}
+          {active && <video className="mirrored" ref={camera.videoRef} autoPlay muted playsInline />}
           {active && !cameraError && <div className="camera-frame"><span /></div>}
           {!active && !error && (
             <div className="remote-camera-placeholder">
@@ -129,9 +147,9 @@ function RemoteScanner() {
             <Camera size={17} /> {active ? "Arahkan ke barcode" : lastBarcode ? "Scan barang berikutnya" : "Mulai scan"}
           </button>
         )}
-        <p className="remote-help">Gunakan kamera belakang. Pastikan barcode berada di dalam kotak dan terlihat jelas.</p>
+        <p className="remote-help">Gunakan kamera depan. Pastikan barcode berada di dalam kotak dan terlihat jelas.</p>
       </section>
-      <footer className="remote-footer">Jangan tutup halaman ini selama digunakan.</footer>
+      <footer className="remote-footer">Sesi tetap aktif selama belum diputus dari kasir PC.</footer>
     </main>
   );
 }

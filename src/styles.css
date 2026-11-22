@@ -249,8 +249,24 @@ td:first-child { display: flex; align-items: center; gap: 8px; color: #39463e; }
 .store-report-row > span { display: grid; gap: 4px; }
 .store-report-row strong { color: #445148; font-size: 10px; }
 .store-report-row small { color: #909b93; font-size: 9px; }
-.store-report-row > b { color: #2f7b54; font-size: 10px; }
+.store-report-row > b { color: #2f7b54; font-size: 10px; font-variant-numeric: tabular-nums; }
 .store-report-row > b.returned-amount { color: #a15a4f; }
+.range-presets { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid #e5ebe6; border-radius: 7px; background: #fff; }
+.range-preset-button { border: 0; border-radius: 5px; padding: 6px 10px; color: #647169; background: transparent; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.range-preset-button:hover { color: #2d7953; background: #f4f8f5; }
+.range-preset-button.active { color: #2d7953; background: #edf6ef; }
+.revenue-trend-card { padding-bottom: 14px; }
+.trend-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #eff2ef; }
+.trend-header h2 { padding: 0; border: 0; font: 700 13px Manrope, sans-serif; color: #29362e; }
+.trend-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; color: #839088; font-size: 10px; font-variant-numeric: tabular-nums; }
+.trend-meta strong { color: #2f7b54; font-weight: 700; }
+.trend-chart-wrap { width: 100%; height: 260px; padding: 14px 12px 4px 8px; }
+.trend-skeleton { height: 240px; margin: 16px; border-radius: 8px; background: linear-gradient(90deg, #f3f6f4 25%, #e9eeea 50%, #f3f6f4 75%); background-size: 200% 100%; }
+.trend-tooltip { min-width: 175px; border: 1px solid #dfe7e1; border-radius: 8px; padding: 10px 12px; background: #fff; box-shadow: 0 8px 24px #182b1e14; font-variant-numeric: tabular-nums; }
+.trend-tooltip-date { margin-bottom: 6px; color: #29362e; font-size: 10px; font-weight: 700; }
+.trend-tooltip-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: #647169; font-size: 10px; line-height: 1.6; }
+.trend-tooltip-row strong { color: #2f7b54; font-weight: 700; }
+.trend-empty-note { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 6px 16px 0; padding-top: 10px; border-top: 1px solid #f0f2f0; color: #839088; font-size: 10px; }
 .shift-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 15px; border: 1px solid #e5ebe6; border-radius: 9px; padding: 12px 15px; background: #fff; }
 .shift-summary { display: flex; align-items: center; gap: 10px; min-width: 180px; }
 .shift-indicator { width: 9px; height: 9px; border-radius: 50%; background: #d3a250; }
@@ -336,6 +352,7 @@ td:first-child { display: flex; align-items: center; gap: 8px; color: #39463e; }
 .remote-scanner-title p { margin-top: 4px; color: #8d9991; font-size: 9px; }
 .remote-camera-view { position: relative; overflow: hidden; width: 100%; aspect-ratio: 4 / 3; border-radius: 8px; background: #121915; }
 .remote-camera-view video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.remote-camera-view video.mirrored { transform: scaleX(-1); }
 .remote-camera-placeholder { display: flex; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #bcc7bf; font-size: 10px; }
 .remote-scan-status { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: #526158; font-size: 10px; line-height: 1.5; }
 .remote-scan-status > svg { flex: 0 0 auto; color: #3a8b5d; }

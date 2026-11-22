@@ -110,3 +110,44 @@ export function validateSalePayment({ total, cashTendered, payments }) {
     change: cashTendered - cashAmount,
   };
 }
+
+function toLocalDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function buildDailyRevenueTrend({ sales = [], from, to }) {
+  if (!from || !to || from > to) return [];
+
+  const buckets = new Map();
+  const cursor = new Date(`${from}T00:00:00`);
+  const endDate = new Date(`${to}T00:00:00`);
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(endDate.getTime())) return [];
+
+  let guard = 0;
+  while (cursor <= endDate && guard < 367) {
+    const key = toLocalDateKey(cursor);
+    buckets.set(key, { date: key, revenue: 0, transactions: 0 });
+    cursor.setDate(cursor.getDate() + 1);
+    guard += 1;
+  }
+
+  for (const sale of sales) {
+    if (!sale || sale.status === "returned") continue;
+    const key = toLocalDateKey(sale.createdAt);
+    if (!key || !buckets.has(key)) continue;
+    const bucket = buckets.get(key);
+    const amount = Number(sale.netTotal ?? sale.total ?? 0);
+    if (Number.isFinite(amount) && amount > 0) {
+      bucket.revenue += amount;
+    }
+    bucket.transactions += 1;
+  }
+
+  return [...buckets.values()];
+}
+
