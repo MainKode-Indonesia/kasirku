@@ -516,6 +516,10 @@ function CashierApp({ user, onLogout }) {
     };
   }, [printProduct]);
 
+  const [printSale, setPrintSale] = useState(null);
+
+
+
   const categories = useMemo(
     () => ["Semua", ...new Set(products.map((product) => product.category))],
     [products],
@@ -958,6 +962,23 @@ function CashierApp({ user, onLogout }) {
       setDigitalConfirmed(false);
       setTransactionCode(String(Date.now()).slice(-6));
       await loadData();
+      setPrintSale({
+        id: sale.id,
+        createdAt: new Date().toISOString(),
+        items: cart.map((item) => ({
+          productId: item.id,
+          productName: item.name,
+          quantity: item.quantity,
+          unitPrice: item.price,
+        })),
+        total,
+        paid,
+        cashTendered: Number(cashTendered ?? 0),
+        change: sale.change,
+        payments: sale.payments,
+        returnedTotal: 0,
+        netTotal: total,
+      });
     } catch (checkoutError) {
       setError(checkoutError.message);
     }
@@ -1749,6 +1770,9 @@ function CashierApp({ user, onLogout }) {
               <span>Setelah retur</span><strong>{rupiah.format(selectedSale.netTotal)}</strong>
             </div>
             <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={() => setPrintSale(selectedSale)}>
+                <ArrowDownToLine size={16} /> Cetak Resi
+              </button>
               <button type="button" className="secondary-button" onClick={() => setSelectedSale(null)}>Tutup</button>
               {selectedSale.items.some((item) => item.quantity > item.returnedQuantity) && <button className="primary-button" type="submit" disabled={!shift}>Proses retur</button>}
             </div>
@@ -1913,6 +1937,160 @@ function CashierApp({ user, onLogout }) {
           <strong>{printProduct.name}</strong>
           <BarcodeGraphic value={printProduct.barcode} height={54} />
           <span>{rupiah.format(Number(printProduct.price))}</span>
+        </div>
+      )}
+
+      {printSale && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPrintSale(null); }}>
+          <div className="receipt-modal-container">
+            <div className="receipt-modal-header">
+              <div className="flex items-center gap-2">
+                <span className="p-2 bg-emerald-100 text-emerald-800 rounded-lg"><Printer size={18} /></span>
+                <div>
+                  <h2>Nota Transaksi</h2>
+                  <p className="text-xs text-gray-500">Pratinjau struk resmi siap cetak / simpan PDF</p>
+                </div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setPrintSale(null)} aria-label="Tutup"><X size={19} /></button>
+            </div>
+
+            <div className="receipt-modal-body">
+              {/* On-screen visual preview card */}
+              <div className="bg-white border border-emerald-100 rounded-xl p-5 shadow-sm max-w-[340px] mx-auto text-gray-800 font-sans">
+                <div className="text-center pb-3 border-b border-dashed border-gray-200 mb-3">
+                  <h3 className="font-bold text-base text-emerald-900 tracking-wide">KasirKu</h3>
+                  <p className="text-xs font-semibold text-gray-700">{stores.find((s) => s.id === selectedStoreId)?.name ?? user.storeName}</p>
+                  <p className="text-[10px] text-emerald-600 font-medium mt-0.5">Official Sales Receipt</p>
+                </div>
+
+                <div className="text-[11px] text-gray-600 mb-3 space-y-1 bg-gray-50 p-2.5 rounded-lg border border-gray-100">
+                  <div className="flex justify-between"><span>No. Nota:</span><strong className="text-gray-900">#{printSale.id.slice(-6).toUpperCase()}</strong></div>
+                  <div className="flex justify-between"><span>Waktu:</span><span>{formatDateTime(printSale.createdAt)}</span></div>
+                  <div className="flex justify-between"><span>Kasir:</span><span>{user.name}</span></div>
+                </div>
+
+                <div className="border-t border-b border-dashed border-gray-200 py-2.5 mb-3 space-y-2 max-h-[160px] overflow-y-auto">
+                  {printSale.items.map((item, idx) => (
+                    <div key={idx} className="text-xs flex justify-between items-start">
+                      <div className="pr-2">
+                        <div className="font-medium text-gray-900">{item.productName}</div>
+                        <div className="text-[10px] text-gray-500">{item.quantity} × {rupiah.format(item.unitPrice)}</div>
+                      </div>
+                      <strong className="text-gray-900">{rupiah.format(item.quantity * item.unitPrice)}</strong>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-1.5 text-xs mb-3 bg-emerald-50/50 p-2.5 rounded-lg border border-emerald-100/60">
+                  <div className="flex justify-between font-bold text-gray-900 pt-0.5">
+                    <span>Total Belanja</span>
+                    <span className="text-emerald-800">{rupiah.format(printSale.total)}</span>
+                  </div>
+                  {(printSale.payments ?? [{ method: "cash", amount: printSale.total }]).map((p, idx) => (
+                    <div key={idx} className="flex justify-between text-gray-600 text-[11px]">
+                      <span>Bayar ({paymentLabel(p.method)})</span>
+                      <span>{rupiah.format(p.amount)}</span>
+                    </div>
+                  ))}
+                  {Number(printSale.cashTendered ?? 0) > 0 && (
+                    <div className="flex justify-between text-gray-600 text-[11px]">
+                      <span>Tunai Diterima</span>
+                      <span>{rupiah.format(printSale.cashTendered)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-gray-600 text-[11px]">
+                    <span>Kembalian</span>
+                    <span>{rupiah.format(printSale.change ?? 0)}</span>
+                  </div>
+                  {Number(printSale.returnedTotal ?? 0) > 0 && (
+                    <div className="flex justify-between text-rose-600 text-[11px]">
+                      <span>Retur</span>
+                      <span>-{rupiah.format(printSale.returnedTotal)}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-center pt-2">
+                  <div className="inline-block border-2 border-dashed border-emerald-700 text-emerald-800 font-extrabold text-[11px] px-3 py-0.5 rounded rotate-[-2deg] mb-2 shadow-xs">
+                    LUNAS / PAID
+                  </div>
+                  <p className="text-[11px] font-semibold text-gray-800">Terima kasih atas kunjungan Anda!</p>
+                  <p className="text-[9px] text-gray-400 mt-1">Simpan struk ini sebagai bukti pembayaran yang sah.</p>
+                </div>
+              </div>
+
+              {/* Hidden print-only high fidelity receipt area */}
+              <div className="print-receipt-area">
+                <div className="text-center pb-3 border-b border-dashed border-gray-400 mb-3">
+                  <h3 className="font-bold text-lg text-black">KasirKu</h3>
+                  <p className="text-xs font-bold text-black">{stores.find((s) => s.id === selectedStoreId)?.name ?? user.storeName}</p>
+                  <p className="text-[10px] text-gray-600 mt-0.5">Struk Belanja Resmi</p>
+                </div>
+                
+                <div className="text-[11px] text-black mb-3 space-y-1">
+                  <div className="flex justify-between"><span>No. Nota:</span><strong>#{printSale.id.slice(-6).toUpperCase()}</strong></div>
+                  <div className="flex justify-between"><span>Waktu:</span><span>{formatDateTime(printSale.createdAt)}</span></div>
+                  <div className="flex justify-between"><span>Kasir:</span><span>{user.name}</span></div>
+                </div>
+
+                <div className="border-t border-b border-dashed border-gray-400 py-2 mb-3 space-y-2">
+                  {printSale.items.map((item, idx) => (
+                    <div key={idx} className="text-xs flex justify-between items-start">
+                      <div className="pr-2">
+                        <div className="font-bold text-black">{item.productName}</div>
+                        <div className="text-[10px] text-gray-700">{item.quantity} × {rupiah.format(item.unitPrice)}</div>
+                      </div>
+                      <strong className="text-black">{rupiah.format(item.quantity * item.unitPrice)}</strong>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-1.5 text-xs mb-3 text-black">
+                  <div className="flex justify-between font-bold pt-1 border-t border-black">
+                    <span>Total Belanja</span>
+                    <span>{rupiah.format(printSale.total)}</span>
+                  </div>
+                  {(printSale.payments ?? [{ method: "cash", amount: printSale.total }]).map((p, idx) => (
+                    <div key={idx} className="flex justify-between text-gray-800 text-[11px]">
+                      <span>Bayar ({paymentLabel(p.method)})</span>
+                      <span>{rupiah.format(p.amount)}</span>
+                    </div>
+                  ))}
+                  {Number(printSale.cashTendered ?? 0) > 0 && (
+                    <div className="flex justify-between text-gray-800 text-[11px]">
+                      <span>Tunai Diterima</span>
+                      <span>{rupiah.format(printSale.cashTendered)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-gray-800 text-[11px]">
+                    <span>Kembalian</span>
+                    <span>{rupiah.format(printSale.change ?? 0)}</span>
+                  </div>
+                  {Number(printSale.returnedTotal ?? 0) > 0 && (
+                    <div className="flex justify-between text-black text-[11px]">
+                      <span>Retur</span>
+                      <span>-{rupiah.format(printSale.returnedTotal)}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-center pt-3 border-t border-dashed border-gray-400">
+                  <div className="inline-block border-2 border-dashed border-black text-black font-extrabold text-xs px-3 py-1 rounded mb-2">
+                    LUNAS
+                  </div>
+                  <p className="text-[11px] font-bold text-black">Terima kasih atas kunjungan Anda!</p>
+                  <p className="text-[9px] text-gray-700 mt-1">Simpan struk ini sebagai bukti pembayaran yang sah.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="receipt-modal-footer">
+              <button type="button" className="secondary-button" onClick={() => setPrintSale(null)}>Tutup</button>
+              <button type="button" className="primary-button" onClick={() => window.print()}>
+                <Printer size={16} /> Cetak / Unduh PDF
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
