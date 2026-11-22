@@ -5,6 +5,8 @@ export function useCameraScanner(active, onScan, options = true) {
   const facingMode = typeof options === "object" && options?.facingMode ? options.facingMode : "environment";
   const videoRef = useRef(null);
   const onScanRef = useRef(onScan);
+  const lastScannedRef = useRef("");
+  const lastScanTimeRef = useRef(0);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
 
@@ -32,7 +34,7 @@ export function useCameraScanner(active, onScan, options = true) {
       try {
         const { BarcodeFormat, BrowserMultiFormatReader } = await import("@zxing/browser");
         if (!running) return;
-        const reader = new BrowserMultiFormatReader(undefined, { delayBetweenScanAttempts: 500 });
+        const reader = new BrowserMultiFormatReader(undefined, { delayBetweenScanAttempts: 400 });
         reader.possibleFormats = [
           BarcodeFormat.CODE_128,
           BarcodeFormat.EAN_8,
@@ -45,12 +47,22 @@ export function useCameraScanner(active, onScan, options = true) {
           { video: { facingMode: { ideal: facingMode } } },
           videoRef.current,
           (result, _decodeError, scannerControls) => {
-            if (!running || hasScanned || !result) return;
+            if (!running || !result) return;
+            const text = result.getText();
             if (stopOnScan) {
+              if (hasScanned) return;
               hasScanned = true;
               scannerControls.stop();
+              onScanRef.current(text);
+            } else {
+              const now = Date.now();
+              if (text === lastScannedRef.current && now - lastScanTimeRef.current < 1500) {
+                return;
+              }
+              lastScannedRef.current = text;
+              lastScanTimeRef.current = now;
+              onScanRef.current(text);
             }
-            onScanRef.current(result.getText());
           },
         );
         if (!running) controls.stop();

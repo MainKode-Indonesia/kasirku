@@ -1,40 +1,55 @@
 # KasirKu
 
-Aplikasi kasir React dengan API Express dan MongoDB. Barcode bisa dipindai lewat kamera perangkat atau scanner USB/Bluetooth yang bertindak sebagai keyboard.
+KasirKu adalah aplikasi Point of Sale (POS) modern berbasis web yang dibangun dengan React, Vite, Tailwind CSS, dan Firebase Firestore & Auth. Dirancang khusus untuk mengelola operasional toko ritel tunggal maupun multi-cabang dengan fitur pemindaian barcode, manajemen inventaris, shift kasir, laporan keuangan, grafik tren pendapatan (Recharts), serta pencetakan resi / ekspor PDF nota yang elegan.
 
-## Menjalankan aplikasi
+## Fitur Utama
 
-1. Pastikan Node.js dan MongoDB Server berjalan. MongoDB Compass adalah GUI untuk mengelola server, bukan pengganti MongoDB Server.
-2. Salin `.env.example` menjadi `.env`, lalu atur `MONGODB_URI` dan buat `JWT_SECRET` acak minimal 32 byte. Jangan gunakan secret contoh untuk deployment.
-3. Pasang dependensi dengan `npm install`.
-4. Buat akun pemilik utama dan pindahkan produk/transaksi lama ke toko utama dengan `npm run create-owner`. Jalankan sekali di terminal interaktif; email dan password tidak disimpan di source code.
-5. Jalankan API dengan `npm run api` dan frontend di terminal lain dengan `npm run dev`.
-6. Buka URL yang ditampilkan Vite dan masuk menggunakan akun pemilik.
+1. **Point of Sale (POS) & Pembayaran Fleksibel**:
+   - Keranjang belanja cepat dengan dukungan pencarian produk dan pemindai barcode.
+   - Metode pembayaran Tunai (dengan kalkulator kembalian), QRIS, Transfer, dan Pembayaran Campuran (Mixed).
+   - Cetak struk belanja / resi instan dan unduh nota format PDF dengan tampilan profesional dan elegan.
 
-Untuk menjalankan pengujian aturan domain kasir:
+2. **Pemindai Barcode Multi-Mode**:
+   - Pemindaian langsung menggunakan kamera perangkat (mendukung kamera depan/belakang).
+   - Integrasi scanner USB / Bluetooth bertindak sebagai keyboard.
+   - **Remote Scanner via HP**: Ubah smartphone menjadi pemindai barcode jarak jauh dengan menghubungkan perangkat via QR pairing. Sesi tetap aktif secara berkelanjutan dan mendukung kamera depan dengan pratinjau yang disesuaikan (*mirrored*).
 
-```bash
-npm test
-```
+3. **Manajemen Produk & Inventaris**:
+   - Tambah dan edit produk dengan generator barcode otomatis atau pemindaian langsung via kamera/remote scanner.
+   - Pengelolaan stok masuk, stok minimum, peringatan stok menipis, dan pengarsipan produk.
 
-Default URI adalah `mongodb://127.0.0.1:27017/kasirku`. Menu Inventaris membuat barcode EAN-13 internal otomatis bila kolom barcode dibiarkan kosong. Barcode produk dapat dicetak sebagai label dari daftar inventaris. Transaksi menyimpan ringkasan dan item penjualan, lalu mengurangi stok produk.
+4. **Multi-Store & Cabang**:
+   - Manajemen toko utama dan toko cabang.
+   - Pengaturan penyuntingan nama dan detail toko utama maupun cabang secara fleksibel.
+   - Pemilik dapat melihat laporan per cabang atau gabungan seluruh cabang.
 
-Pemilik dapat membuat toko cabang beserta akun adminnya dari menu **Toko**. Setiap toko mempunyai produk, stok, dan laporan transaksi tersendiri. Hanya pemilik utama yang dapat berpindah toko atau memilih laporan semua toko. Penghapusan produk mengarsipkan produk tanpa menghapus riwayat penjualan.
+5. **Shift Kasir & Laporan Keuangan (Recharts)**:
+   - Buka dan tutup shift kasir dengan pencatatan modal awal dan kas aktual.
+   - Dashboard laporan lengkap dengan grafik tren pendapatan harian menggunakan Recharts dan rentang waktu cepat ("Hari ini", "7 hari", "30 hari").
+   - Riwayat transaksi dan retur barang (sebagian atau penuh) dengan penyesuaian otomatis stok dan pendapatan.
 
-## Operasional toko
+## Menjalankan Aplikasi
 
-- **Laporan:** pilih tanggal awal dan akhir (maksimal 366 hari), toko, atau semua toko untuk pemilik utama. Ekspor CSV mengikuti filter aktif. Retur mengurangi pendapatan pada tanggal retur diproses.
-- **Riwayat transaksi dan retur:** cari transaksi berdasarkan kode atau nama produk, lihat detail, lalu masukkan jumlah dan alasan retur. Retur sebagian maupun seluruh sisa barang mengembalikan stok dan mengoreksi pendapatan.
-- **Pergerakan stok:** stok awal, penjualan, retur, stok masuk, dan penyesuaian dicatat dengan perubahan jumlah dan alasan. Perubahan stok produk yang sudah ada hanya dapat dilakukan melalui menu **Stok**.
-- **Shift kasir:** buka shift dengan kas awal sebelum transaksi atau retur. Saat tutup, masukkan kas aktual untuk membandingkannya dengan kas yang seharusnya; riwayat shift dan selisih tersedia pada laporan.
-- **Stok minimum:** batas minimum dapat diatur per produk. Menu **Stok menipis** dan peringatan kasir menampilkan produk yang perlu direstock.
-- **Akun:** pengguna dapat mengganti password dengan verifikasi password saat ini. Pemilik dapat mengatur ulang password admin cabang atau menonaktifkan/mengaktifkan cabang; cabang yang memiliki shift terbuka harus menutupnya dahulu.
-- **Cadangan:** menu **Akun** mengunduh ekspor JSON per toko; pemilik juga dapat mengekspor semua toko. File berisi data operasional tetapi tidak berisi hash password atau token sesi. Ekspor ini tidak menyediakan pemulihan/import otomatis.
-- **Pembayaran:** transaksi dapat dicatat sebagai tunai, QRIS, transfer, atau campuran. QRIS/transfer dikonfirmasi manual oleh kasir; aplikasi tidak menghubungkan payment gateway. Retur mencatat pengembalian sesuai metode asal, sedangkan pengiriman uang tetap dilakukan di luar aplikasi.
+1. Pasang dependensi dengan menjalankan:
+   ```bash
+   npm install
+   ```
+2. Jalankan server pengembangan lokal (development server):
+   ```bash
+   npm run dev
+   ```
+3. Buka URL yang ditampilkan oleh Vite di browser Anda (biasanya `http://localhost:3000`).
+4. Untuk menjalankan unit test:
+   ```bash
+   npm test
+   ```
+5. Untuk membangun aplikasi untuk produksi:
+   ```bash
+   npm run build
+   ```
 
-Login menggunakan cookie HTTP-only dan password bcrypt; pendaftaran mandiri tidak tersedia. Untuk deployment HTTPS, atur `NODE_ENV=production` dan `TRUST_PROXY=1` di belakang reverse proxy tepercaya. Endpoint API hanya bind ke loopback.
-
-Pemindai kamera meminta izin kamera dan membutuhkan halaman HTTPS (atau `localhost`). Gunakan URL HTTPS dengan sertifikat tepercaya saat memindai dari HP.
-
-Untuk memakai HP sebagai pemindai terpisah, buka kasir PC melalui URL HTTPS, pilih **Hubungkan HP**, lalu pindai QR dengan kamera bawaan HP. Halaman pemindai di HP akan mengirim barcode ke keranjang PC; setiap barang perlu satu tap untuk memulai pemindaian berikutnya. Sesi pairing kedaluwarsa otomatis setelah 30 menit.
-"# kasirku" 
+## Arsitektur & Keamanan
+- **Frontend**: React SPA dengan Vite dan styling Tailwind CSS.
+- **Database & Auth**: Google Firebase (Firestore untuk penyimpanan data real-time dan Firebase Authentication untuk login aman).
+- **Grafik & Visualisasi**: Recharts untuk analisis tren pendapatan.
+- **Pencetakan**: Print dialog native dengan optimasi tata letak `@media print` untuk resi thermal 58mm/80mm maupun pratinjau PDF.

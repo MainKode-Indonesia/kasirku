@@ -20,6 +20,7 @@ function RemoteScanner() {
   const [authReady, setAuthReady] = useState(false);
   const [active, setActive] = useState(false);
   const [sending, setSending] = useState(false);
+  const [facingMode, setFacingMode] = useState("user"); // "user" (depan) or "environment" (belakang)
   const [error, setError] = useState(
     credentials.id && credentials.storeId && credentials.token
       ? ""
@@ -65,24 +66,23 @@ function RemoteScanner() {
         barcode,
       });
       setLastBarcode(barcode);
-      setStatus("Barcode terkirim. Tekan tombol di bawah untuk scan berikutnya.");
+      setStatus("Barcode terkirim! Silakan scan barang berikutnya.");
       navigator.vibrate?.(80);
     } catch (sendError) {
       setError(sendError.message);
       setStatus("Tidak dapat mengirim barcode.");
     } finally {
       setSending(false);
-      setActive(false);
     }
   }, [credentials]);
 
-  const camera = useCameraScanner(active && !error && Boolean(firebaseUser), sendBarcode, { facingMode: "user" });
+  const camera = useCameraScanner(active && !error && Boolean(firebaseUser), sendBarcode, { facingMode, stopOnScan: false });
   const cameraError = camera.error;
-  const canStart = Boolean(credentials.id && credentials.storeId && credentials.token && firebaseUser) && !error && !cameraError && !sending;
+  const canStart = Boolean(credentials.id && credentials.storeId && credentials.token && firebaseUser) && !error && !cameraError;
 
   function startScanning() {
     setError("");
-    setStatus("Arahkan barcode ke kamera depan di dalam kotak.");
+    setStatus(`Arahkan barcode ke kamera ${facingMode === "user" ? "depan" : "belakang"} di dalam kotak.`);
     setActive(true);
   }
 
@@ -112,8 +112,21 @@ function RemoteScanner() {
           <span className="remote-scanner-icon"><Barcode size={22} /></span>
           <div><h1>Pemindai barcode</h1><p>Hasil scan dikirim langsung ke kasir PC.</p></div>
         </div>
+
+        <div className="flex items-center justify-between mb-3 px-1">
+          <span className="text-[11px] font-semibold text-gray-600">Pilih Kamera HP:</span>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setFacingMode((prev) => (prev === "user" ? "environment" : "user"))}
+            style={{ padding: "5px 10px", fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+          >
+            <Camera size={13} /> {facingMode === "user" ? "Kamera Depan (User)" : "Kamera Belakang (Env)"}
+          </button>
+        </div>
+
         <div className="remote-camera-view">
-          {active && <video className="mirrored" ref={camera.videoRef} autoPlay muted playsInline />}
+          {active && <video className={facingMode === "user" ? "mirrored" : ""} ref={camera.videoRef} autoPlay muted playsInline />}
           {active && !cameraError && <div className="camera-frame"><span /></div>}
           {!active && !error && (
             <div className="remote-camera-placeholder">
@@ -144,10 +157,10 @@ function RemoteScanner() {
             disabled={!canStart}
             onClick={startScanning}
           >
-            <Camera size={17} /> {active ? "Arahkan ke barcode" : lastBarcode ? "Scan barang berikutnya" : "Mulai scan"}
+            <Camera size={17} /> {active ? "Scanner aktif (siap scan berturut-turut)" : "Mulai scan berkelanjutan"}
           </button>
         )}
-        <p className="remote-help">Gunakan kamera depan. Pastikan barcode berada di dalam kotak dan terlihat jelas.</p>
+        <p className="remote-help">Gunakan tombol di atas untuk beralih antara kamera depan dan belakang. Sesi terus aktif untuk melayani pembeli saat ramai.</p>
       </section>
       <footer className="remote-footer">Sesi tetap aktif selama belum diputus dari kasir PC.</footer>
     </main>

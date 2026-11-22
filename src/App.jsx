@@ -355,10 +355,10 @@ function CashierApp({ user, onLogout }) {
     else setError(`Barcode ${value} belum terdaftar. Tambahkan produknya di menu Inventaris.`);
   }, [products, addToCart]);
 
+  const [cameraFacingMode, setCameraFacingMode] = useState("environment");
   const cameraScanner = useCameraScanner(showCameraScanner, (code) => {
     processBarcode(code);
-    setShowCameraScanner(false);
-  });
+  }, { stopOnScan: false, facingMode: cameraFacingMode });
 
   const [showProductCameraScanner, setShowProductCameraScanner] = useState(false);
   const productCameraScanner = useCameraScanner(showProductCameraScanner, (code) => {
@@ -1822,16 +1822,29 @@ function CashierApp({ user, onLogout }) {
             <div className="modal-heading">
               <div>
                 <span className="modal-icon"><Camera size={19} /></span>
-                <div><h2 id="camera-title">Scan dengan kamera</h2><p>Arahkan kamera belakang ke barcode produk.</p></div>
+                <div><h2 id="camera-title">Scan dengan kamera</h2><p>Arahkan kamera ke barcode produk secara terus-menerus.</p></div>
               </div>
               <button type="button" className="icon-button" onClick={() => setShowCameraScanner(false)} aria-label="Tutup pemindai"><X size={19} /></button>
             </div>
+
+            <div className="flex items-center justify-between px-4 pt-2">
+              <span className="text-xs font-medium text-gray-600">Mode Kamera:</span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setCameraFacingMode((prev) => (prev === "environment" ? "user" : "environment"))}
+                style={{ padding: "5px 10px", fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+              >
+                <Camera size={13} /> {cameraFacingMode === "environment" ? "Kamera Belakang (Env)" : "Kamera Depan (User)"}
+              </button>
+            </div>
+
             <div className="camera-view">
-              <video ref={cameraScanner.videoRef} autoPlay muted playsInline />
+              <video className={cameraFacingMode === "user" ? "mirrored" : ""} ref={cameraScanner.videoRef} autoPlay muted playsInline />
               {!cameraScanner.error && <div className="camera-frame"><span /></div>}
               {cameraScanner.error && <div className="camera-error"><AlertCircle size={23} /><span>{cameraScanner.error}</span></div>}
             </div>
-            <p className="camera-instructions">Pastikan barcode terlihat jelas, tidak silau, dan berada di dalam kotak.</p>
+            <p className="camera-instructions">Modal tetap terbuka saat pembeli ramai agar bisa scan produk berturut-turut dengan cepat. Klik Tutup jika selesai.</p>
             {cameraScanner.error && (
               <button className="primary-button camera-retry" onClick={cameraScanner.retry}>
                 <Camera size={16} /> Coba lagi
