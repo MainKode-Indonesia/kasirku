@@ -360,6 +360,15 @@ function CashierApp({ user, onLogout }) {
     setShowCameraScanner(false);
   });
 
+  const [showProductCameraScanner, setShowProductCameraScanner] = useState(false);
+  const productCameraScanner = useCameraScanner(showProductCameraScanner, (code) => {
+    const value = code.trim();
+    if (value) {
+      setProductForm((prev) => ({ ...prev, barcode: value }));
+    }
+    setShowProductCameraScanner(false);
+  }, { facingMode: "environment" });
+
   const loadReport = useCallback(async () => {
     setReportLoading(true);
     try {
@@ -475,7 +484,12 @@ function CashierApp({ user, onLogout }) {
         for (const event of events) {
           if (processedScanIds.current.has(event.id)) continue;
           processedScanIds.current.add(event.id);
-          processBarcode(event.barcode);
+          if (showProductForm) {
+            setProductForm((prev) => ({ ...prev, barcode: event.barcode }));
+            setNotice(`Barcode ${event.barcode} diterima dari pemindai HP.`);
+          } else {
+            processBarcode(event.barcode);
+          }
         }
       },
       onError: (pollError) => {
@@ -489,7 +503,7 @@ function CashierApp({ user, onLogout }) {
       },
     });
     return () => unsubscribe();
-  }, [remoteSession, processBarcode, scannerStorageKey, user.id]);
+  }, [remoteSession, processBarcode, scannerStorageKey, user.id, showProductForm]);
 
   useEffect(() => {
     if (!printProduct) return undefined;
@@ -1614,7 +1628,37 @@ function CashierApp({ user, onLogout }) {
                   onChange={(event) => setProductForm({ ...productForm, criticalLowStockThreshold: event.target.value })}
                 />
               </label>
-              <label>Barcode <span className="optional">(opsional)</span><input inputMode="numeric" placeholder="Kosongkan untuk dibuat otomatis" value={productForm.barcode} onChange={(event) => setProductForm({ ...productForm, barcode: event.target.value })} /></label>
+              <label>
+                Barcode <span className="optional">(opsional)</span>
+                <div className="scanner-form" style={{ padding: "0 8px", background: "#fff", display: "flex", alignItems: "center", gap: "8px", border: "1px solid #e5ebe6", borderRadius: "6px", height: "37px" }}>
+                  <Barcode size={16} style={{ color: "#4a8f69", flex: "0 0 auto" }} />
+                  <input
+                    inputMode="numeric"
+                    placeholder="Kosongkan untuk dibuat otomatis"
+                    value={productForm.barcode}
+                    onChange={(event) => setProductForm({ ...productForm, barcode: event.target.value })}
+                    style={{ border: 0, outline: 0, flex: 1, background: "transparent", fontSize: "10px", color: "#39463e", height: "100%", padding: 0 }}
+                  />
+                  <button
+                    type="button"
+                    className="camera-button"
+                    onClick={() => setShowProductCameraScanner(true)}
+                    aria-label="Scan barcode produk dengan kamera"
+                    style={{ height: "27px", minHeight: "27px", padding: "0 8px", fontSize: "9px" }}
+                  >
+                    <Camera size={14} /><span>Scan</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`camera-button ${remoteSession ? "phone-scanner-active" : ""}`}
+                    onClick={() => remoteSession ? setShowPairing(true) : connectPhoneScanner()}
+                    aria-label={remoteSession ? "Lihat QR pemindai HP" : "Hubungkan pemindai HP"}
+                    style={{ height: "27px", minHeight: "27px", padding: "0 8px", fontSize: "9px" }}
+                  >
+                    <Smartphone size={14} /><span>{remoteSession ? "HP" : "HP"}</span>
+                  </button>
+                </div>
+              </label>
             </div>
             {editingProduct && <div className="barcode-hint"><Boxes size={16} /><span>Gunakan menu Stok untuk mencatat stok masuk atau penyesuaian beserta alasannya.</span></div>}
             <div className="barcode-hint"><Sparkles size={16} /><span>Barcode kosong? Kami buatkan barcode unik yang siap dipindai dan dicetak.</span></div>
@@ -1766,6 +1810,36 @@ function CashierApp({ user, onLogout }) {
             <p className="camera-instructions">Pastikan barcode terlihat jelas, tidak silau, dan berada di dalam kotak.</p>
             {cameraScanner.error && (
               <button className="primary-button camera-retry" onClick={cameraScanner.retry}>
+                <Camera size={16} /> Coba lagi
+              </button>
+            )}
+          </section>
+        </div>
+      )}
+
+      {showProductCameraScanner && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowProductCameraScanner(false);
+          }}
+        >
+          <section className="camera-modal" role="dialog" aria-modal="true" aria-labelledby="product-camera-title">
+            <div className="modal-heading">
+              <div>
+                <span className="modal-icon"><Camera size={19} /></span>
+                <div><h2 id="product-camera-title">Scan barcode produk</h2><p>Arahkan kamera ke barcode pada kemasan produk.</p></div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setShowProductCameraScanner(false)} aria-label="Tutup pemindai"><X size={19} /></button>
+            </div>
+            <div className="camera-view">
+              <video ref={productCameraScanner.videoRef} autoPlay muted playsInline />
+              {!productCameraScanner.error && <div className="camera-frame"><span /></div>}
+              {productCameraScanner.error && <div className="camera-error"><AlertCircle size={23} /><span>{productCameraScanner.error}</span></div>}
+            </div>
+            <p className="camera-instructions">Pastikan barcode terlihat jelas di dalam kotak.</p>
+            {productCameraScanner.error && (
+              <button className="primary-button camera-retry" onClick={productCameraScanner.retry}>
                 <Camera size={16} /> Coba lagi
               </button>
             )}
