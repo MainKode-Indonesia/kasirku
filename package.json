@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 3000",
+    "dev": "vite",
     "start": "vite preview --host 0.0.0.0 --port 3000",
     "api": "node server/index.js",
     "create-owner": "node server/create-owner.js",
     "build": "vite build",
+    "lint": "eslint .",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "test": "vitest run"
   },
